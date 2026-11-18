@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional
 
@@ -12,6 +13,7 @@ from ..frames import point_in_polygon
 from ..vision.tracker import RobotObservation, WorldSnapshot
 from .base import Controller, Request, RobotState
 from .calibration import CalibrationJob
+from .goal import Goal, drive_to
 from .registry import ControllerRegistry
 from .robot_model import RobotModel, raw_stop
 
@@ -33,6 +35,7 @@ class RobotRuntime:
         self.last_raw: Dict[str, Any] = raw_stop(cfg.output.type)
         self.last_compute = 0.0
         self.active = False  # was driving at the previous step
+        self.goal: Optional[Goal] = None  # go-to-position, has priority over GAMA speed requests
 
 
 class ControlManager:
@@ -46,6 +49,7 @@ class ControlManager:
         self._lock = threading.RLock()
         self.estop = False
         self.robots: Dict[str, RobotRuntime] = {}
+        self.place_queue: List[str] = []  # robots placed one after the other
         self.set_config(cfg)
 
     # ------------------------------------------------------------------ config
@@ -97,7 +101,81 @@ class ControlManager:
                 return False
             rt.request = req
             rt.request_source = source
+            if req.stop and rt.goal is not None and rt.goal.active:
+                self._end_goal(rt, "cancelled", "stop requested")
             return True
+
+    # ------------------------------------------------------------------ go to position
+    def set_goal(self, robot: str, goal: Optional[Goal]) -> bool:
+        """Send a robot to a position (None cancels). Replaces any queued placement of that robot."""
+        with self._lock:
+            rt = self.robots.get(robot)
+            if rt is None:
+                return False
+            if robot in self.place_queue:
+                self.place_queue.remove(robot)
+            if goal is None:
+                if rt.goal is not None and rt.goal.active:
+                    self._end_goal(rt, "cancelled", "cancelled")
+                return True
+            rt.goal = goal
+            log.info("Robot %s: going to (%.3f, %.3f)%s", robot, goal.x, goal.y,
+                     "" if goal.heading is None else f", heading {math.degrees(goal.heading):.0f} deg")
+            return True
+
+    def place(self, goals: Dict[str, Goal]) -> List[str]:
+        """Place several robots, one after the other (no collisions between moving robots)."""
+        with self._lock:
+            names = [n for n in goals if n in self.robots]
+            for n in names:
+                g = goals[n]
+                g.status = "queued"
+                self.robots[n].goal = g
+            self.place_queue = [n for n in self.place_queue if n not in names] + names
+            log.info("Placing %d robot(s): %s", len(names), ", ".join(names))
+            return names
+
+    def _end_goal(self, rt: RobotRuntime, status: str, message: str = "") -> None:
+        rt.goal.status, rt.goal.message = status, message
+        rt.goal.ended = time.time()
+        log.log(logging.WARNING if status == "failed" else logging.INFO, "Robot %s: go-to %s%s",
+                rt.cfg.name, status, f" ({message})" if message else "")
+
+    def _advance_queue(self, now: float) -> None:
+        while self.place_queue:
+            rt = self.robots.get(self.place_queue[0])
+            if rt is None or rt.goal is None or not rt.goal.active:
+                self.place_queue.pop(0)
+                continue
+            if rt.goal.status == "queued":
+                rt.goal.status = "moving"
+                rt.goal.started = now
+            break
+
+    def _step_goal(self, rt: RobotRuntime, now: float, obs: RobotObservation, age: float,
+                   snap: WorldSnapshot) -> Dict[str, Any]:
+        goal = rt.goal
+        if goal.status == "queued":
+            return self._stop(rt, "go-to: queued")
+        if now - goal.started > self.cfg.goto.timeout:
+            self._end_goal(rt, "failed", f"timeout ({self.cfg.goto.timeout:.0f} s)")
+            return self._stop(rt, "go-to failed")
+        if snap.H is None:
+            goal.message = "no homography"
+            return self._stop(rt, "go-to: no homography")
+        if not obs.visible and age > self.cfg.safety.tag_lost_timeout:
+            goal.message = "tag lost"
+            return self._stop(rt, "go-to: tag lost")
+        state = RobotState(name=rt.cfg.name, x=obs.x, y=obs.y, theta=obs.theta, visible=obs.visible)
+        others = [RobotState(name=n, x=o.x, y=o.y, theta=o.theta) for n, o in snap.robots.items()
+                  if n != rt.cfg.name and o.visible]
+        body = drive_to(goal, state, self.cfg.goto, rt.cfg.calibration.max_linear, others)
+        if body is None:
+            self._end_goal(rt, "arrived")
+            return self._stop(rt, "go-to: arrived")
+        rt.active = False  # the controller is not used: reset it when GAMA takes over again
+        rt.status = f"go-to: {goal.status}" + (f" ({goal.message})" if goal.message else "")
+        return rt.model.to_raw(body)
 
     def set_estop(self, on: bool) -> None:
         with self._lock:
@@ -159,6 +237,7 @@ class ControlManager:
                 raw = self._step_robot(rt, now, snap)
                 rt.last_raw = raw
                 self.emit(rt.cfg, raw)
+            self._advance_queue(now)
 
     def _stop(self, rt: RobotRuntime, why: str) -> Dict[str, Any]:
         rt.status = why
@@ -191,7 +270,11 @@ class ControlManager:
             return raw
 
         if self.estop:
+            if rt.goal is not None and rt.goal.active:
+                self._end_goal(rt, "cancelled", "emergency stop")
             return self._stop(rt, "emergency stop")
+        if rt.goal is not None and rt.goal.active:
+            return self._step_goal(rt, now, obs, age, snap)
         req = rt.request
         if req is None:
             return self._stop(rt, "waiting for a request")
@@ -246,8 +329,9 @@ class ControlManager:
                                                          "stamp": req.stamp, "stop": req.stop, "source": rt.request_source},
                     "command": rt.last_raw,
                     "calibration_job": rt.job.describe() if rt.job else rt.last_job,
+                    "goal": rt.goal.describe() if rt.goal else None,
                 }
-            return {"estop": self.estop, "robots": out}
+            return {"estop": self.estop, "robots": out, "place_queue": list(self.place_queue)}
 
     def robot_names(self) -> List[str]:
         return list(self.robots)

@@ -181,6 +181,14 @@ class OutputConfig(_Model):
     topic: str = Field("/{name}/cmd_vel", description="Output topic ({name} = robot name)")
 
 
+class HomePose(_Model):
+    """Where the robot starts a GAMA run, in GAMA (logical) coordinates."""
+
+    x: float
+    y: float
+    heading: Optional[float] = Field(None, description="Final heading in GAMA units (empty = any)")
+
+
 class RobotConfig(_Model):
     name: str
     tag_id: int = Field(..., description="Id of the tag carried by the robot (negative = not assigned yet)")
@@ -189,6 +197,7 @@ class RobotConfig(_Model):
     controller_params: Dict[str, Any] = Field(default_factory=dict)
     output: OutputConfig = OutputConfig()
     calibration: CalibrationData = CalibrationData()
+    home: Optional[HomePose] = Field(None, description="Start position (GAMA coordinates) used by 'Place robots' / {\"place\": \"home\"}")
 
     @field_validator("name")
     @classmethod
@@ -213,6 +222,19 @@ class RosConfig(_Model):
     control_rate: float = Field(20.0, gt=0, description="Control loop rate (Hz)")
     qos_depth: int = 10
     publish_per_robot_topics: bool = True
+
+
+class GotoConfig(_Model):
+    """Built-in 'go to position' used to place the robots (GAMA {"goto": ...} / {"place": ...})."""
+
+    speed_fraction: float = Field(0.5, gt=0, le=1, description="Travel speed as a fraction of each robot's max_linear")
+    position_tolerance: float = Field(0.02, gt=0, description="Arrived when closer than this (m)")
+    heading_tolerance: float = Field(5.0, gt=0, description="Final heading tolerance (degrees)")
+    k_distance: float = Field(1.5, gt=0, description="Speed gain on the remaining distance (1/s)")
+    k_heading: float = Field(2.5, gt=0, description="Turn gain on the heading error (1/s)")
+    max_turn_rate: float = Field(1.5, gt=0, description="Max turn rate while placing (rad/s)")
+    clearance: float = Field(0.18, ge=0, description="Wait when another robot is closer than this, in front (m)")
+    timeout: float = Field(60.0, gt=0, description="Give up after (s)")
 
 
 class SafetyConfig(_Model):
@@ -251,6 +273,7 @@ class AppConfig(_Model):
     safety: SafetyConfig = SafetyConfig()
     web: WebConfig = WebConfig()
     plugins: PluginsConfig = PluginsConfig()
+    goto: GotoConfig = GotoConfig()
 
     @field_validator("robots")
     @classmethod

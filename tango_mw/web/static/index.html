@@ -10,13 +10,14 @@
 <header>
   <div class="brand">Tango <span>GAMA ↔ robots middleware</span></div>
   <div class="badges" id="badges"></div>
-  <button id="estop" class="estop" title="Emergency stop of every robot">EMERGENCY STOP</button>
+  <button id="estop" class="estop" title="Stops every robot at once (also on ROS topic /tango/estop)">EMERGENCY STOP</button>
 </header>
 <nav id="tabs">
-  <button data-tab="dash" class="active">Dashboard</button>
-  <button data-tab="deploy">Deployment</button>
-  <button data-tab="camera">Camera & detection</button>
-  <button data-tab="world">World & GAMA</button>
+  <button data-tab="start" class="active">Start</button>
+  <button data-tab="dash">Dashboard</button>
+  <button data-tab="camera">Camera</button>
+  <button data-tab="world">Field & tags</button>
+  <button data-tab="deploy">Scan & assign</button>
   <button data-tab="robots">Robots</button>
   <button data-tab="controllers">Controllers</button>
   <button data-tab="network">ROS network</button>
@@ -33,30 +34,48 @@
   <button id="savecfg" class="primary">Save</button>
 </div>
 <main>
-  <section id="tab-dash" class="tab active">
+  <section id="tab-start" class="tab active">
+    <div class="grid2">
+      <div class="card"><h3>Setup, step by step <span class="help" data-help="Follow the steps in order. Each line turns green on its own when the middleware sees that the step is done. Click a step to open the place where it is done.">?</span></h3>
+        <ol id="steps" class="steps"></ol>
+      </div>
+      <div class="card"><h3>Live view <span class="help" data-help="What the camera sees. Green outlines: boundary tags; orange: robots (with their heading arrow); red: unknown tags. The yellow grid is the GAMA world.">?</span></h3>
+        <img id="stream0" class="preview" alt="camera stream">
+        <div class="row">
+          <button id="placeall" class="primary" title="Drive every robot to its home position, one after the other">Place robots at home</button>
+          <button id="cancelplace" class="ghost">Cancel placement</button>
+          <span id="placeinfo" class="muted small"></span>
+        </div>
+        <p class="muted small">Need help? The <a href="https://projet-tango.github.io/tango-middleware/" target="_blank">setup manual</a>
+          walks through a complete setup: 3 robots, a phone camera, a GAMA model (also in <code>docs/</code> of the repository).</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-dash" class="tab">
     <div class="grid2">
       <div class="card video"><img id="stream" alt="camera stream"><div class="muted small" id="videoinfo"></div></div>
       <div class="card">
-        <h3>World</h3>
+        <h3>World <span class="help" data-help="The homography maps image pixels to metres on the floor. It needs at least 4 boundary tags in view. The reprojection error tells how well the tags agree with their configured positions (a few mm is good).">?</span></h3>
         <div id="worldinfo" class="kv"></div>
-        <h3>GAMA</h3>
+        <h3>GAMA <span class="help" data-help="GAMA publishes JSON requests on /tango/requests. 'Active' means a request arrived less than 2 s ago. Robots stop when requests stop (safety.request_timeout).">?</span></h3>
         <div id="gamainfo" class="kv"></div>
       </div>
     </div>
-    <div class="card"><h3>Setup checks <span class="muted small">— lighting and image quality, measured on the tags</span></h3>
+    <div class="card"><h3>Setup checks <span class="help" data-help="Is the image good enough for reliable tracking? Measured on the tags themselves: contrast, glare, size, sharpness, detection stability, plus frame rate, flicker and, with a phone, its exposure and the motion blur at full speed.">?</span></h3>
       <div class="tablewrap"><table class="checks" data-checks></table></div>
     </div>
     <div class="card">
-      <h3>Robots</h3>
+      <h3>Robots <span class="help" data-help="Live state of every robot: where it is (metres and GAMA units), what it was asked, the command sent to it and whether its ROS command topic has a subscriber (the robot is listening).">?</span></h3>
       <div class="tablewrap"><table id="robottable"></table></div>
     </div>
   </section>
 
   <section id="tab-deploy" class="tab">
-    <p class="muted">Quick setup assistant. Its proposals are written to the configuration being edited:
-      check them (or fix them by hand in the other tabs), then click "Apply".</p>
+    <p class="muted">Quick setup by scanning the scene. Proposals are written to the configuration being edited:
+      check them, then click "Apply".</p>
     <div class="grid2">
-      <div class="card"><h3>1. Scan the scene</h3>
+      <div class="card"><h3>1. Scan the scene <span class="help" data-help="Lists every tag the camera sees for a moment, with its current role. Unknown tags can be turned into robots or landmarks from here.">?</span></h3>
         <div class="row"><label>Duration (s) <input id="scandur" type="number" value="1" step="0.5" min="0.2"></label>
           <button id="scanbtn">Scan</button><span id="scaninfo" class="muted small"></span></div>
         <div class="tablewrap"><table id="scantable"></table></div>
@@ -64,26 +83,21 @@
       <div class="card video"><img id="stream3" alt="preview"></div>
     </div>
     <div class="grid2">
-      <div class="card"><h3>2. World frame</h3>
-        <p class="muted small">The 4 tags closest to the image corners become the world corners. Measure the distance between the tag <b>centres</b> with a tape measure.
-          Convention: the top of the image is +y; use rotation/mirror if the camera is mounted differently.</p>
+      <div class="card"><h3>2. World frame <span class="help" data-help="Measure the distance between the CENTRES of the corner tags with a tape measure and type it here: the 4 tags closest to the image corners become the world corners. The top of the image is +y.">?</span></h3>
         <div class="field"><label>Width (m) <small>centre to centre, x axis</small></label><input id="wwidth" type="number" step="any"></div>
         <div class="field"><label>Height (m) <small>y axis</small></label><input id="wheight" type="number" step="any"></div>
         <div class="field"><label>Rotation</label><select id="wrot"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></div>
         <div class="field"><label>Mirror (x flipped)</label><input id="wmirror" type="checkbox"></div>
         <div class="row"><button id="proposeworld">Propose the corners</button></div>
         <div id="worldproposal"></div>
-        <h3>Extra landmarks</h3>
-        <p class="muted small">Once the homography is valid, unknown tags lying on the floor can be measured and added as landmarks: the world can still be computed when a corner is hidden.</p>
+        <h3>Extra landmarks <span class="help" data-help="Optional. Once the homography is valid, other tags lying on the floor can be measured and added: the world can then still be computed when a corner tag is hidden by a robot.">?</span></h3>
         <div class="row"><button id="measureextra" class="ghost">Measure and add the unknown tags</button><span id="measureinfo" class="small"></span></div>
       </div>
-      <div class="card"><h3>3. Robots</h3>
+      <div class="card"><h3>3. Robots <span class="help" data-help="Create robots from unknown tags, or discover them on ROS (topics like /robot1/cmd_vel). Then 'Identify' spins each robot for a second and keeps the tag that turned: no need to know which tag is on which robot.">?</span></h3>
         <div class="row"><button id="robotsfromtags" class="ghost">Create one robot per unknown tag</button>
           <input id="disctpl" size="18" placeholder="/{name}/cmd_vel"><button id="discover" class="ghost">Discover on ROS</button></div>
         <div id="discoverout"></div>
         <h3>Assign each robot to its tag</h3>
-        <p class="muted small">"Identify" spins the robot in place for a moment (command on its topic) and keeps the tag that rotated.
-          If the tag already belonged to another robot, the two are swapped. You can also type the tag by hand.</p>
         <div class="row"><button id="identifyall" class="primary">Identify all unassigned robots</button>
           <label class="small">motion <select id="identmotion"><option value="turn">turn</option><option value="forward">forward</option></select></label>
           <label class="small">raw command <input id="identraw" type="number" step="any" placeholder="auto"></label></div>
@@ -94,12 +108,13 @@
 
   <section id="tab-camera" class="tab">
     <div class="grid2">
-      <div class="card"><h3>Camera</h3><div id="form-camera"></div>
+      <div class="card"><h3>Camera <span class="help" data-help="Where the images come from: a USB camera index (0, 1…), a video file, an RTSP/HTTP URL, 'mobile' for a phone, or 'synthetic' for the built-in simulator. Advanced settings (exposure, FOURCC, lens intrinsics…) are folded below.">?</span></h3><div id="form-camera"></div>
         <div class="row"><button id="probe" class="ghost">Detect local cameras</button><span id="probeout" class="muted small"></span></div>
       </div>
-      <div class="card" id="mobilecard"><h3>Phone as camera</h3><div id="mobilebox"></div></div>
-      <div class="card"><h3>Setup checks</h3><div class="tablewrap"><table class="checks" data-checks></table></div></div>
-      <div class="card"><h3>AprilTag detection</h3><div id="form-detector"></div>
+      <div class="card" id="mobilecard"><h3>Phone as camera <span class="help" data-help="An Android phone (Tango Camera app) or an iPhone (web page) streams its camera over Wi-Fi. The app finds the middleware by itself; type the pairing code once (or scan the QR code). The quick settings below are applied to the phone immediately.">?</span></h3>
+        <div id="phonecontrols"></div><div id="mobilebox"></div></div>
+      <div class="card"><h3>Setup checks <span class="help" data-help="Lighting and image quality, measured on the tags. Fix the red lines first: they make tracking unreliable.">?</span></h3><div class="tablewrap"><table class="checks" data-checks></table></div></div>
+      <div class="card"><h3>AprilTag detection <span class="help" data-help="The tag family must match the printed tags (tag36h11 by default). The other settings trade speed for robustness; the defaults suit most setups.">?</span></h3><div id="form-detector"></div>
         <h3>Preview</h3><img id="stream2" class="preview" alt="preview">
       </div>
     </div>
@@ -107,34 +122,41 @@
 
   <section id="tab-world" class="tab">
     <div class="grid2">
-      <div class="card"><h3>Boundary tags (physical frame, metres)</h3>
-        <p class="muted small">The centre of each tag is placed at the given coordinates. At least 4 tags must be visible to compute the image → world homography.</p>
+      <div class="card"><h3>Boundary tags (physical frame, metres) <span class="help" data-help="The tags lying on the floor that define the area, with the position of their CENTRE in metres (x to the right, y up). At least 4 must be visible. The 'Scan & assign' tab can fill this in for you.">?</span></h3>
         <div id="form-world"></div>
         <div class="row"><button id="relock" class="ghost">Recompute / re-lock the homography</button></div>
       </div>
-      <div class="card"><h3>Logical frame (GAMA)</h3>
-        <p class="muted small">Mapping between the physical world and the GAMA environment. With the origin at the top left, the heading is GAMA's (0 = east, clockwise).</p>
+      <div class="card"><h3>GAMA world <span class="help" data-help="Size of the GAMA environment that maps onto the area: by default the bounding box of the boundary tags becomes the whole GAMA world. With the origin at the top left, headings are GAMA's (0 = east, clockwise).">?</span></h3>
         <div id="form-logical"></div>
-        <h3>Print tags</h3>
-        <div class="row"><label>Id <input id="tagid" type="number" value="0" min="0"></label>
-          <label>Size px <input id="tagsize" type="number" value="800"></label>
-          <a id="taglink" class="button ghost" target="_blank">Open the PNG</a></div>
       </div>
+    </div>
+    <div class="card"><h3>Print tags <span class="help" data-help="Print the tags of this configuration at their real size: open the sheet, print at 100 % ('Actual size'), check the 100 mm ruler, cut along the dashed lines keeping the white margin. Robot tags carry a FRONT arrow: stick it towards the front of the robot.">?</span></h3>
+      <div class="row">
+        <label>Boundary tags <input id="tagsize" type="number" value="100" min="10" step="5"> mm</label>
+        <label>Robot tags <input id="rtagsize" type="number" value="60" min="10" step="5"> mm</label>
+        <a id="printworld" class="button" target="_blank">Print boundary tags</a>
+        <a id="printrobots" class="button" target="_blank">Print robot tags</a>
+        <a id="printall" class="button ghost" target="_blank">Print all</a>
+        <a id="ziptags" class="button ghost">Download all (SVG + PNG)</a>
+      </div>
+      <div class="row"><label>Other ids <input id="tagids" placeholder="e.g. 4, 5, 20-23" size="16"></label>
+        <a id="printcustom" class="button ghost" target="_blank">Print these</a></div>
+      <div id="taggallery" class="taggallery"></div>
     </div>
   </section>
 
   <section id="tab-robots" class="tab">
-    <div class="row"><button id="addrobot">+ Add a robot</button></div>
+    <div class="row"><button id="addrobot">+ Add a robot</button>
+      <span class="help" data-help="Each robot has a name (its ROS namespace), the id of the tag stuck on it, an output topic (Twist on /name/cmd_vel by default), a controller, a calibration and an optional home position used to place it before a GAMA run.">?</span></div>
     <div id="robotcards"></div>
   </section>
 
   <section id="tab-controllers" class="tab">
     <div class="grid2">
-      <div class="card"><h3>Available controllers</h3><div id="ctrllist"></div>
+      <div class="card"><h3>Available controllers <span class="help" data-help="A controller turns a GAMA request (speed + heading) into a robot command (linear + angular speed). heading_pid suits most differential robots.">?</span></h3><div id="ctrllist"></div>
         <h3>Loading errors</h3><div id="ctrlerrors" class="muted small">none</div>
       </div>
-      <div class="card"><h3>Controller editor</h3>
-        <p class="muted small">The .py files in the plugin directories are loaded and hot-reloaded. Any <code>Controller</code> subclass with a <code>name</code> attribute becomes available to the robots.</p>
+      <div class="card"><h3>Controller editor <span class="help" data-help="Write your own controller in Python: files are reloaded as soon as they are saved. Any Controller subclass with a name attribute becomes available to the robots.">?</span></h3>
         <div class="row">
           <select id="ctrlfiles"></select>
           <button id="ctrlopen" class="ghost">Open</button>
@@ -150,10 +172,10 @@
 
   <section id="tab-network" class="tab">
     <div class="grid2">
-      <div class="card"><h3>ROS 2 environment</h3><div id="rosenv" class="kv"></div></div>
-      <div class="card"><h3>Robot availability</h3><div id="presence"></div></div>
+      <div class="card"><h3>ROS 2 environment <span class="help" data-help="GAMA, the robots and the middleware must share the same ROS_DOMAIN_ID and RMW, and be on the same network.">?</span></h3><div id="rosenv" class="kv"></div></div>
+      <div class="card"><h3>Robot availability <span class="help" data-help="A robot is reachable when a ROS node subscribes to its command topic.">?</span></h3><div id="presence"></div></div>
     </div>
-    <div class="card"><h3>Middleware interface</h3><p class="muted small">Topics published / subscribed by the middleware, and what is connected on the other side.</p>
+    <div class="card"><h3>Middleware interface <span class="help" data-help="Every topic the middleware publishes or listens to, and what is connected on the other side.">?</span></h3>
       <div class="tablewrap"><table id="topicmap"></table></div></div>
     <div class="grid2">
       <div class="card"><h3>Visible nodes <span id="nodecount" class="muted"></span></h3><ul id="nodes" class="list"></ul></div>
@@ -164,7 +186,8 @@
   <section id="tab-system" class="tab">
     <div class="grid2">
       <div class="card"><h3>ROS 2</h3><div id="form-ros"></div><p class="muted small">Changing the namespace, node or domain restarts the bus.</p></div>
-      <div class="card"><h3>Safety</h3><div id="form-safety"></div>
+      <div class="card"><h3>Safety <span class="help" data-help="When robots stop on their own: no GAMA request for a while, tag lost, out of the area.">?</span></h3><div id="form-safety"></div>
+        <h3>Placement (go to position) <span class="help" data-help="How robots drive to a position when GAMA sends {'goto': …} or when you click 'Place robots at home'.">?</span></h3><div id="form-goto"></div>
         <h3>Plugins</h3><div id="form-plugins"></div>
         <h3>Web interface</h3><div id="form-web"></div><p class="muted small">Host/port take effect on the next start.</p></div>
     </div>

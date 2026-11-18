@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 640" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#333"/></marker>
+    <pattern id="tag" width="10" height="10" patternUnits="userSpaceOnUse"><rect width="10" height="10" fill="#111"/><rect x="2" y="2" width="3" height="3" fill="#fff"/><rect x="5" y="5" width="3" height="3" fill="#fff"/></pattern>
+  </defs>
+  <rect width="760" height="640" fill="#fff"/>
+  <text x="380" y="28" text-anchor="middle" font-size="16" font-weight="700">Top view — 1.5 m × 1.5 m field (physical frame, metres)</text>
+  <!-- field: 1.5 m = 450 px, origin (bottom-left tag centre) at (150, 560) -->
+  <rect x="150" y="110" width="450" height="450" fill="#f4f5f7" stroke="#999" stroke-dasharray="6 4"/>
+  <!-- boundary tags, 0.10 m = 30 px -->
+  <g stroke="#17924b" stroke-width="2">
+    <rect x="135" y="545" width="30" height="30" fill="url(#tag)"/>
+    <rect x="585" y="545" width="30" height="30" fill="url(#tag)"/>
+    <rect x="585" y="95" width="30" height="30" fill="url(#tag)"/>
+    <rect x="135" y="95" width="30" height="30" fill="url(#tag)"/>
+  </g>
+  <g font-weight="600" fill="#17924b">
+    <text x="120" y="600" text-anchor="middle">tag 0 · (0, 0)</text>
+    <text x="630" y="600" text-anchor="middle">tag 1 · (1.5, 0)</text>
+    <text x="630" y="84" text-anchor="middle">tag 2 · (1.5, 1.5)</text>
+    <text x="120" y="84" text-anchor="middle">tag 3 · (0, 1.5)</text>
+  </g>
+  <!-- physical axes -->
+  <line x1="150" y1="560" x2="250" y2="560" stroke="#333" stroke-width="2" marker-end="url(#a)"/>
+  <text x="256" y="565" font-weight="600">x</text>
+  <line x1="150" y1="560" x2="150" y2="460" stroke="#333" stroke-width="2" marker-end="url(#a)"/>
+  <text x="140" y="452" font-weight="600">y</text>
+  <!-- GAMA axes -->
+  <g fill="#c27c0e" stroke="#c27c0e">
+    <line x1="150" y1="110" x2="250" y2="110" stroke-width="2" marker-end="url(#a)"/>
+    <line x1="150" y1="110" x2="150" y2="210" stroke-width="2" marker-end="url(#a)"/>
+    <text x="256" y="116" stroke="none" font-weight="600">GAMA x</text>
+    <text x="158" y="226" stroke="none" font-weight="600">GAMA y</text>
+    <text x="175" y="140" stroke="none">GAMA (0, 0)</text>
+    <text x="624" y="566" stroke="none">GAMA (100, 100)</text>
+  </g>
+  <!-- home positions: GAMA (25,80) (50,80) (75,80) heading 270 (up) -->
+  <g>
+    <circle cx="262" cy="470" r="22" fill="#fdeeee" stroke="#d23a3a" stroke-width="2"/>
+    <circle cx="375" cy="470" r="22" fill="#fdeeee" stroke="#d23a3a" stroke-width="2"/>
+    <circle cx="487" cy="470" r="22" fill="#fdeeee" stroke="#d23a3a" stroke-width="2"/>
+    <g stroke="#d23a3a" stroke-width="3">
+      <line x1="262" y1="470" x2="262" y2="438" marker-end="url(#a)"/>
+      <line x1="375" y1="470" x2="375" y2="438" marker-end="url(#a)"/>
+      <line x1="487" y1="470" x2="487" y2="438" marker-end="url(#a)"/>
+    </g>
+    <text x="262" y="512" text-anchor="middle">robot1 · tag 10</text>
+    <text x="375" y="512" text-anchor="middle">robot2 · tag 11</text>
+    <text x="487" y="512" text-anchor="middle">robot3 · tag 12</text>
+    <text x="375" y="530" text-anchor="middle" fill="#555" font-size="12">home positions (GAMA (25, 80), (50, 80), (75, 80), heading 270 = facing up)</text>
+  </g>
+  <!-- camera -->
+  <circle cx="375" cy="335" r="14" fill="#eef4ff" stroke="#2f6fed" stroke-width="2"/>
+  <circle cx="375" cy="335" r="5" fill="#2f6fed"/>
+  <text x="397" y="330" fill="#2f6fed" font-weight="600">phone, ~1.8 m above the centre</text>
+  <text x="397" y="347" fill="#2f6fed">camera pointing straight down</text>
+  <text x="380" y="630" text-anchor="middle" fill="#555" font-size="12">Coordinates are those of the tag centres. Leave ≥ 10 cm of free floor outside the tags so the robots can turn.</text>
+</svg>

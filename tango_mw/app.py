@@ -7,15 +7,17 @@ import math
 import threading
 import time
 from pathlib import Path
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 import cv2
 import numpy as np
 
 from .bus import Bus, LoopbackBus, make_bus
+from .bus.base import PLACE
 from .config import AppConfig, RobotConfig, load_config, save_config
 from .control.base import Request
 from .control.calibration import apply_result
+from .control.goal import Goal
 from .control.manager import ControlManager
 from .control.registry import ControllerRegistry
 from .frames import LogicalFrame, apply_h
@@ -237,6 +239,10 @@ class App:
         try:
             now = time.time()
             frame = fields.get("frame") or ("logical" if self.cfg.logical.requests_in_logical else "physical")
+            if robot == PLACE:
+                return bool(self.place(fields.get("place"), frame, source))
+            if "goto" in fields:
+                return self.goto(robot, fields["goto"], frame, source)
             stop = bool(fields.get("stop", False))
             speed = float(fields.get("speed", 0.0))
             heading = fields.get("heading")
@@ -265,6 +271,50 @@ class App:
         except Exception as exc:
             log.warning("invalid request for %s: %s", robot, exc)
             return False
+
+    # ------------------------------------------------------------------ go to position
+    def make_goal(self, spec: Any, frame: str = "logical", source: str = "") -> Goal:
+        """{"x", "y", "heading"?} or [x, y, heading?], in GAMA units (frame='logical') or m / rad."""
+        if isinstance(spec, (list, tuple)):
+            spec = dict(zip(("x", "y", "heading"), spec))
+        if not isinstance(spec, dict) or "x" not in spec or "y" not in spec:
+            raise ValueError("goto needs x and y")
+        x, y = float(spec["x"]), float(spec["y"])
+        h = spec.get("heading")
+        if frame == "logical":
+            x, y = self.logical.point_to_physical(x, y)
+            h = None if h is None else self.logical.heading_to_physical(float(h))
+        else:
+            h = None if h is None else float(h)
+        bounds = self.snapshot.bounds or self.tracker.bounds
+        if not self.manager._in_bounds(x, y, bounds):
+            raise ValueError(f"target ({x:.2f}, {y:.2f}) m is outside the area")
+        return Goal(x=x, y=y, heading=h, source=source)
+
+    def goto(self, robot: str, spec: Any, frame: str = "logical", source: str = "") -> bool:
+        """Send one robot to a position; spec None cancels."""
+        try:
+            goal = None if spec is None else self.make_goal(spec, frame, source)
+        except ValueError as exc:
+            log.warning("go-to for %s refused: %s", robot, exc)
+            return False
+        return self.manager.set_goal(robot, goal)
+
+    def place(self, spec: Any, frame: str = "logical", source: str = "") -> List[str]:
+        """Place robots one after the other. spec = "home" (configured homes) or {robot: pose}."""
+        if spec == "home" or spec is None:
+            spec = {r.name: r.home.model_dump() for r in self.cfg.robots if r.home is not None and r.enabled}
+            frame = "logical"
+            if not spec:
+                log.warning("Place robots: no robot has a home position configured")
+                return []
+        goals = {}
+        for name, pose in dict(spec).items():
+            try:
+                goals[name] = self.make_goal(pose, frame, source)
+            except ValueError as exc:
+                log.warning("Place %s refused: %s", name, exc)
+        return self.manager.place(goals)
 
     def _job_done(self, robot: str, job) -> None:
         if job.kind == "identify":
@@ -316,7 +366,18 @@ class App:
             "x": o.x, "y": o.y, "theta": o.theta,
             "vx": o.vx, "vy": o.vy, "omega": o.omega, "speed": o.speed,
             "logical": self.logical.pose_to_logical(o.x, o.y, o.theta, o.vx, o.vy),
+            "goal": self._goal_json(name),
         }
+
+    def _goal_json(self, name: str) -> Optional[Dict[str, Any]]:
+        rt = self.manager.robots.get(name)
+        if rt is None or rt.goal is None:
+            return None
+        g = rt.goal.describe()
+        lx, ly = self.logical.point_to_logical(g["x"], g["y"])
+        g["logical"] = {"x": lx, "y": ly,
+                        "heading": None if g["heading"] is None else self.logical.heading_to_logical(g["heading"])}
+        return g
 
     def world_json(self, snap: Optional[WorldSnapshot] = None) -> Dict[str, Any]:
         snap = snap or self.snapshot
@@ -555,7 +616,8 @@ class App:
             txt += f" err {snap.reprojection_error * 1000:.1f}mm"
         if self.manager.estop:
             txt += "  EMERGENCY STOP"
-        cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(img, (4, 4), (16 + tw, 14 + th), (30, 30, 30), -1)  # readable on any background
+        cv2.putText(img, txt, (10, 9 + th), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, int(quality or self.cfg.web.jpeg_quality)])
         return buf.tobytes() if ok else None

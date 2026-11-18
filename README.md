@@ -7,7 +7,9 @@ It has two jobs:
 1. **Match the two worlds.** A camera you configure (USB, IP stream, or a phone) films the scene. AprilTags placed in the corners delimit the world, and every robot carries its own tag. The middleware detects the tags, computes the image → world homography, then publishes the robots' poses on ROS 2 at a fixed rate, both in metres and in GAMA coordinates.
 2. **Drive the robots.** For each robot, GAMA sends a *speed + heading* request. A controller turns it into a robot command, then the robot's own calibration (gains, dead zones, drift) adapts it to the hardware. Several controllers are provided, calibration is automatic, and you can write your own controllers: they are hot-reloaded.
 
-A **web administration interface** lets you set everything: camera, tags, GAMA frame, robots, controllers (with a code editor), calibration, manual driving, emergency stop, ROS network state (nodes, topics, reachable robots) and logs.
+A **web administration interface** lets you set everything: camera, tags, GAMA frame, robots, controllers (with a code editor), calibration, manual driving, emergency stop, ROS network state (nodes, topics, reachable robots) and logs. Its **Start** tab is a step-by-step checklist that turns green as the setup progresses, every section has a **?** help bubble, and rarely needed settings are folded under *Advanced settings*.
+
+**Setup manual** (GitHub Pages, from [`docs/`](docs/)): a complete walk-through with screenshots — 3 differential robots, a square field delimited by 4 tags, a phone as the camera, a GAMA model ([`docs/gama/tango_demo.gaml`](docs/gama/tango_demo.gaml)): hardware, software, configuration, calibration and running the demo. To publish it: repository *Settings → Pages → Deploy from a branch*, branch `main`, folder `/docs`.
 
 ```
  GAMA ──(ROS 2: /tango/requests)──►┌────────────── middleware ──────────────┐──► /robotX/cmd_vel ──► robots
@@ -82,7 +84,7 @@ ROS 2 must be sourced in the service: pass `--ros-setup` (on Linux it is detecte
 
 ## Physical setup
 
-1. Print tags from the configured family (`tag36h11` by default), with a white border.
+1. Print the tags: *Field & tags* tab → *Print boundary tags* / *Print robot tags* opens an A4 sheet at real size (print at 100 %, check the 100 mm ruler). Robot tags carry a FRONT arrow. *Download all* gives vector SVGs at real size and PNGs (`/print/tags`, `/api/tags/<id>.svg?size_mm=`, `/api/tags/archive.zip`).
 2. Place **at least 4 boundary tags** on the floor, usually in the corners. In *World & GAMA*, enter each tag's `id` and the position of its **centre** in metres. These positions define the physical frame: x to the right, y "up", angles counter-clockwise.
 3. Stick a tag on every robot, with the top of the tag facing the robot's front. The small remaining offset is measured by the `heading_offset` calibration. In *Robots*, declare each robot's name, `tag_id` and output.
 4. In *Camera & detection*, choose the source: a USB index (the *Detect local cameras* button lists them), a video file, an RTSP/HTTP URL, or `mobile` for a phone. Set the resolution, fps, FOURCC, exposure and rotation. Add the intrinsics if the lens distorts the image a lot.
@@ -191,7 +193,9 @@ By default `logical.requests_in_logical: true`: speed is in GAMA units per secon
 ```
 
 - `"frame": "physical"` makes a request use m/s and radians (counter-clockwise).
-- `"stop": true` stops the robot.
+- `"stop": true` stops the robot (and cancels a go-to).
+- `{"robot": "robot1", "goto": {"x": 50, "y": 50, "heading": 90}}` drives the robot to a point (heading optional) with its calibration, then stops; `"goto": null` cancels. No need to resend it. A go-to has priority over speed requests for that robot.
+- `{"place": "home"}` or `{"place": {"robot1": {"x": .., "y": ..}, ...}}` places several robots **one after the other**, so nobody has to put them at exact spots by hand before a run (`home` = each robot's configured home position, settable with *Use current position* in its card, or the *Place robots at home* button). Progress is in the robot state: `goal.status` = `queued`, `moving`, `turning`, `waiting`, `arrived`, `failed` or `cancelled`. Settings: `goto.*` (speed, tolerances, clearance to other robots, timeout).
 - Any extra field (for example `goal_x`) is passed as is to the controller in `request.extra`.
 - A request stays valid for `safety.request_timeout` seconds. GAMA must therefore resend it every cycle, otherwise the robot stops.
 
@@ -200,7 +204,8 @@ By default `logical.requests_in_logical: true`: speed is in GAMA units per secon
 ```json
 {"valid": true, "reprojection_error": 0.0004, "homography": [[...]], "physical_to_logical": [[...]],
  "robots": {"robot1": {"visible": true, "x": 0.53, "y": 0.50, "theta": 1.57, "speed": 0.0,
-                       "logical": {"x": 33.3, "y": 31.2, "heading": -90.0, "speed": 0.0}}}}
+                       "logical": {"x": 33.3, "y": 31.2, "heading": -90.0, "speed": 0.0},
+                       "goal": {"status": "arrived", "logical": {"x": 25, "y": 80, "heading": 270}}}}}
 ```
 
 ---
@@ -277,10 +282,11 @@ tango_mw/
   config.py            configuration model (pydantic) + YAML
   frames.py            geometry, physical ↔ GAMA mapping
   vision/              camera, phone receiver (mobile.py), setup checks (quality.py), AprilTag detection, homography & tracking, synthetic camera
-  control/             controller API, built-in controllers, registry/plugins, calibration, loop
+  control/             controller API, built-in controllers, registry/plugins, calibration, go-to/placement, loop
   bus/                 ROS 2 (rclpy) and loopback
   app.py               orchestration (vision / control / publication threads)
   service.py           start at boot (systemd / scheduled task / launchd)
+  tagsheet.py          printable tags (SVG at real size, A4 sheets, ZIP)
   web/                 FastAPI server + interface (static/mobile.html: phone camera page)
 controllers/           your controllers (hot-reloaded)
 tests/                 python -m pytest

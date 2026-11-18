@@ -20,6 +20,9 @@ def output_topic(robot: RobotConfig) -> str:
     return robot.output.topic.replace("{name}", robot.name)
 
 
+PLACE = "__place__"
+
+
 def parse_request_payload(text: str) -> List[Tuple[str, Dict[str, Any]]]:
     """Accepted JSON forms on the requests topic::
 
@@ -27,9 +30,15 @@ def parse_request_payload(text: str) -> List[Tuple[str, Dict[str, Any]]]:
         {"requests": [{"robot": "r1", ...}, {"robot": "r2", ...}]}
         [{"robot": "r1", ...}, ...]
         {"r1": {"speed": 10, "heading": 90}, "r2": {...}}
+        {"robot": "r1", "goto": {"x": 20, "y": 30, "heading": 90}}   go to a position, then stop
+        {"place": "home"}  or  {"place": {"r1": {"x": .., "y": ..}, ...}}   place robots one by one
+
+    ``place`` is returned under the pseudo robot name PLACE.
     """
     data = json.loads(text)
     items: List[Tuple[str, Dict[str, Any]]] = []
+    if isinstance(data, dict) and "place" in data:
+        return [(PLACE, data)]
     if isinstance(data, dict) and "requests" in data:
         data = data["requests"]
     if isinstance(data, list):
@@ -111,7 +120,7 @@ class Bus:
         try:
             items = parse_request_payload(text)
         except Exception as exc:
-            self.errors["requests"] = f"JSON invalide: {exc}"
+            self.errors["requests"] = f"invalid JSON: {exc}"
             return
         for robot, fields in items:
             if self.on_request:

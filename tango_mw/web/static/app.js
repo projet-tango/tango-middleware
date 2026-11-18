@@ -54,7 +54,22 @@ function unwrapNullable(s) {
   }
   return [s, false];
 }
-function labelFor(key, s) { return h("label", {}, key, s.description ? h("small", {}, s.description) : null); }
+const pretty = k => k.replace(/_/g, " ");
+function labelFor(key, s) { return h("label", { title: key }, pretty(key), s.description ? h("small", {}, s.description) : null); }
+
+// Fields shown by default; everything else is folded under "Advanced settings".
+const BASIC = {
+  camera: ["source", "width", "height", "fps", "rotate", "flip"],
+  detector: ["family"],
+  world: ["tags", "homography_mode"],
+  logical: ["width", "height", "origin", "heading_unit"],
+  ros: ["bus", "domain_id", "namespace"],
+  safety: ["request_timeout", "tag_lost_timeout", "stop_out_of_bounds"],
+  goto: ["speed_fraction", "clearance", "timeout"],
+  plugins: ["dirs", "auto_reload"],
+  web: ["host", "port", "allow_code_edit"],
+  robot: ["name", "tag_id", "enabled", "output"],
+};
 
 function jsonField(obj, key, nullable) {
   const ta = h("textarea", { class: "json", spellcheck: "false" });
@@ -129,31 +144,34 @@ function arrayTable(itemSchema, arr) {
 
 function buildForm(s, obj, opts = {}) {
   s = resolve(s);
-  const box = h("div");
+  const outer = h("div");
+  const adv = h("div");
   for (const [key, ps0] of Object.entries(s.properties || {})) {
     if (opts.skip && opts.skip.includes(key)) continue;
+    const box = opts.basic && !opts.basic.includes(key) ? adv : outer;
     const [ps, nullable] = unwrapNullable(ps0);
     if (ps.type === "object" && ps.properties) {
       if (obj[key] == null) obj[key] = {};
-      const det = h("details", { open: opts.openNested ? true : null }, h("summary", {}, key + (ps.description ? ` — ${ps.description}` : "")), buildForm(ps, obj[key], {}));
+      const det = h("details", { open: opts.openNested ? true : null }, h("summary", {}, pretty(key) + (ps.description ? ` — ${ps.description}` : "")), buildForm(ps, obj[key], {}));
       box.append(det);
       continue;
     }
     if (ps.type === "array" && ps.items && resolve(ps.items).properties) {
       if (!Array.isArray(obj[key])) obj[key] = [];
-      box.append(h("fieldset", {}, h("legend", {}, key), arrayTable(resolve(ps.items), obj[key])));
+      box.append(h("fieldset", {}, h("legend", {}, pretty(key)), arrayTable(resolve(ps.items), obj[key])));
       continue;
     }
     let input = inputFor(ps, obj, key, nullable);
     if (!input) input = jsonField(obj, key, nullable);
     box.append(h("div", { class: "field" }, labelFor(key, ps0.description ? ps0 : ps), input));
   }
-  return box;
+  if (adv.childElementCount) outer.append(h("details", { class: "advanced" }, h("summary", {}, `Advanced settings (${adv.childElementCount})`), adv));
+  return outer;
 }
 
-function renderSection(id, section, opts) {
+function renderSection(id, section, opts = {}) {
   const el = $(id); el.innerHTML = "";
-  el.append(buildForm(schema.properties[section], draft[section], opts));
+  el.append(buildForm(schema.properties[section], draft[section], { basic: BASIC[section], ...opts }));
 }
 
 // ---------------------------------------------------------------- config loading
@@ -173,7 +191,10 @@ function renderForms() {
   renderSection("#form-safety", "safety");
   renderSection("#form-plugins", "plugins");
   renderSection("#form-web", "web");
+  renderSection("#form-goto", "goto");
   renderRobots();
+  renderPhoneControls();
+  updateTagLinks();
 }
 async function applyDraft(save) {
   try {
@@ -228,7 +249,7 @@ function renderRobots() {
       params.append(h("button", { class: "ghost small", onclick: () => { r.controller_params = {}; markDirty(); renderRobots(); } }, "Default values"));
     }
     // calibration
-    const procSel = h("select", {}, Object.entries(procedures?.procedures || {}).map(([k, d]) => h("option", { value: k, title: d }, `${k} — ${d}`)));
+    const procSel = h("select", {}, Object.entries(procedures?.procedures || {}).map(([k, d]) => h("option", { value: k, title: d, selected: k === "full" }, `${k} — ${d}`)));
     const optsTa = h("textarea", { class: "json", spellcheck: "false" }); optsTa.value = JSON.stringify(procedures?.default_options || {}, null, 0);
     const jobBox = h("div", { class: "small", "data-job": r.name });
     // manual drive
@@ -251,7 +272,8 @@ function renderRobots() {
         h("span", { class: "small", "data-rstatus": r.name }),
         h("button", { class: "danger ghost", onclick: () => { if (confirm(`Delete ${r.name}?`)) { draft.robots.splice(idx, 1); markDirty(); renderRobots(); } } }, "Delete")),
       h("div", { class: "cols3" },
-        h("div", {}, h("h4", {}, "Identity & output"), buildForm(rs, r, { skip: ["controller", "controller_params", "calibration"], openNested: true })),
+        h("div", {}, h("h4", {}, "Identity & output"), buildForm(rs, r, { skip: ["controller", "controller_params", "calibration", "home"], openNested: true, basic: BASIC.robot }),
+          homeEditor(r)),
         h("div", {}, h("h4", {}, "Controller"), h("div", { class: "field" }, h("label", {}, "controller"), ctrlSel), params),
         h("div", {}, h("h4", {}, "Calibration"),
           h("div", { class: "row" }, procSel),
@@ -269,7 +291,8 @@ function renderRobots() {
           h("div", { class: "field" }, h("label", {}, "frame"), frameSel),
           h("div", { class: "field" }, h("label", {}, "speed"), spd),
           h("div", { class: "field" }, h("label", {}, `heading (${unit} in logical)`), hdg),
-          h("div", { class: "row" }, driveBtn))));
+          h("div", { class: "row" }, driveBtn),
+          gotoEditor(r))));
     box.append(card);
   });
   updateRobotLive();
@@ -282,6 +305,40 @@ $("#addrobot").addEventListener("click", () => {
     output: { type: "twist", topic: "/{name}/cmd_vel" }, calibration: clone(serverCfg.robots[0]?.calibration ?? defaultCalibration()) });
   markDirty(); renderRobots();
 });
+// home position (GAMA units) and go-to, in the robot card
+function homeEditor(r) {
+  const unit = draft.logical.heading_unit;
+  const box = h("div", {}, h("h4", {}, "Home position ", h("span", { class: "help", "data-help": "Where the robot starts a GAMA run, in GAMA coordinates. 'Place robots at home' (Start tab) or {\"place\": \"home\"} from GAMA drives every robot there, one after the other. Easiest: drive or put the robot where it should start, then click 'Use current position'." }, "?")));
+  const mk = (k, v) => { const i = h("input", { type: "number", step: "any", placeholder: k }); i.value = v ?? ""; return i; };
+  const hx = mk("x", r.home?.x), hy = mk("y", r.home?.y), hh = mk("heading", r.home?.heading);
+  const upd = () => {
+    if (hx.value === "" || hy.value === "") { r.home = null; } else r.home = { x: Number(hx.value), y: Number(hy.value), heading: hh.value === "" ? null : Number(hh.value) };
+    markDirty();
+  };
+  [hx, hy, hh].forEach(i => i.addEventListener("input", upd));
+  box.append(h("div", { class: "row" }, h("label", { class: "small" }, "x ", hx), h("label", { class: "small" }, "y ", hy), h("label", { class: "small" }, `heading (${unit}) `, hh)),
+    h("div", { class: "row" },
+      h("button", { class: "ghost", onclick: async () => {
+        if (dirty) return toast("Apply the pending changes first.", true);
+        try { await api("POST", `/api/robots/${r.name}/home_here`); await loadConfig(true); } catch (e) { toast(e.message, true); }
+      } }, "Use current position"),
+      h("button", { class: "ghost", onclick: () => { hx.value = hy.value = hh.value = ""; upd(); } }, "Clear")));
+  return box;
+}
+function gotoEditor(r) {
+  const unit = draft.logical.heading_unit;
+  const mk = k => h("input", { type: "number", step: "any", placeholder: k });
+  const gx = mk("x"), gy = mk("y"), gh = mk("heading");
+  return h("div", {}, h("h4", {}, "Go to position (GAMA units) ", h("span", { class: "help", "data-help": "Drives the robot to a point with its calibration, then stops. Leave heading empty for any final heading. GAMA can do the same with {\"robot\": \"" + r.name + "\", \"goto\": {\"x\": …, \"y\": …}}." }, "?")),
+    h("div", { class: "row" }, gx, gy, h("label", { class: "small" }, `(${unit}) `, gh),
+      h("button", { onclick: async () => {
+        if (gx.value === "" || gy.value === "") return toast("x and y are required", true);
+        const body = { x: Number(gx.value), y: Number(gy.value) }; if (gh.value !== "") body.heading = Number(gh.value);
+        try { await api("POST", `/api/robots/${r.name}/goto`, body); } catch (e) { toast(e.message, true); }
+      } }, "Go"),
+      h("button", { class: "ghost", onclick: () => api("DELETE", `/api/robots/${r.name}/goto`) }, "Cancel")));
+}
+
 function defaultCalibration() {
   const o = {}; for (const [k, s] of Object.entries(resolve(schema.$defs.CalibrationData).properties)) o[k] = s.default ?? null; return o;
 }
@@ -597,7 +654,7 @@ function renderIdentTable() {
       h("td", {}, h("b", {}, r.name)),
       h("td", {}, r.tag_id >= 0 ? "#" + r.tag_id : h("span", { class: "warn" }, "unassigned")),
       h("td", {}, h("span", { class: "dot " + (w?.visible ? "ok" : "bad") })),
-      h("td", {}, h("button", { class: "ghost", onclick: () => startIdentify(r.name).catch(e => toast(e.message, true)) }, "Identifier")),
+      h("td", {}, h("button", { class: "ghost", onclick: () => startIdentify(r.name).catch(e => toast(e.message, true)) }, "Identify")),
       h("td", {}, inp, " ", h("button", { class: "ghost", onclick: async () => {
         if (inp.value === "") return;
         try { await api("POST", `/api/robots/${r.name}/assign_tag`, { tag_id: Number(inp.value) }); await loadConfig(true); } catch (e) { toast(e.message, true); }
@@ -639,6 +696,114 @@ $("#probe").addEventListener("click", async () => {
   $("#probeout").textContent = cams.length ? cams.map(c => `#${c.index} (${c.width}×${c.height})`).join(", ") + " — set 'source' to the index" : "no local camera found";
 });
 $("#relock").addEventListener("click", () => api("POST", "/api/world/relock"));
+
+// ---------------------------------------------------------------- start guide
+let stepsKey = "";
+function renderSteps() {
+  const s = status; if (!s || !serverCfg) return;
+  const hl = s.health, w = s.world, cfg = serverCfg;
+  const robots = cfg.robots.filter(r => r.enabled);
+  const missing = w.world_tags_expected.filter(i => !w.world_tags_visible.includes(i));
+  const seen = robots.filter(r => w.robots[r.name] && w.robots[r.name].visible);
+  const known = robots.filter(r => s.presence[r.name] && s.presence[r.name].known);
+  const online = known.filter(r => s.presence[r.name].online);
+  const calibrated = robots.filter(r => r.calibration && r.calibration.calibrated_at);
+  const homed = robots.filter(r => r.home);
+  const q = s.checks ? s.checks.overall : "unknown";
+  const gamaOn = s.gama.last_request_age !== null && s.gama.last_request_age < 2;
+  const st = (ok, warn) => ok ? "ok" : warn ? "warn" : "bad";
+  const steps = [
+    ["Camera streaming", "camera", st(hl.camera_ok), hl.camera_ok ? `${fmt(hl.fps, 0)} fps from ${cfg.camera.source}` : (hl.camera_error || "no image"),
+      "Pick the camera source. For a phone: set source to 'mobile', open the Tango Camera app and type the pairing code."],
+    ["Boundary tags in view", "world", st(w.valid && !missing.length, w.valid), w.valid ? (missing.length ? `missing: ${missing.join(", ")}` : `all ${w.world_tags_expected.length} visible, error ${fmt(w.reprojection_error * 1000, 1)} mm`) : "homography not computed",
+      "Print the boundary tags (Field & tags), lay them flat at the corners, enter their positions (or use Scan & assign)."],
+    ["Image quality", "camera", q === "unknown" ? "warn" : q, s.checks && s.checks.checks.filter(c => c.status === q && q !== "ok").map(c => c.label).join(", ") || (q === "ok" ? "lighting and tags look good" : "waiting for frames"),
+      "Fix the red lines of the setup checks: light, glare, tag size, focus."],
+    ["Robots seen by the camera", "deploy", st(robots.length && seen.length === robots.length, seen.length), `${seen.length}/${robots.length} visible`,
+      "Stick a tag on each robot (FRONT arrow forward). Scan & assign → Identify finds which tag is on which robot."],
+    ["Robots listening on ROS", "network", s.bus.kind !== "ros2" ? "warn" : st(known.length && online.length === known.length, online.length), s.bus.kind !== "ros2" ? "no ROS 2 (loopback bus)" : `${online.length}/${known.length} with a subscriber on their command topic`,
+      "Start the robots' ROS nodes; same ROS_DOMAIN_ID as the middleware."],
+    ["Robots calibrated", "robots", st(robots.length && calibrated.length === robots.length, calibrated.length), `${calibrated.length}/${robots.length}`,
+      "Robots tab → Calibration → 'full' → Start, one robot at a time, with room around it."],
+    ["Home positions set", "robots", st(robots.length && homed.length === robots.length, homed.length), `${homed.length}/${robots.length} (optional)`,
+      "Robots tab → Home position: put the robot at its start spot and click 'Use current position'."],
+    ["GAMA connected", "dash", st(gamaOn, s.gama.publishers_on_requests > 0), gamaOn ? "requests arriving" : (s.gama.publishers_on_requests ? "publisher present, no request yet" : "no request yet"),
+      "Run the GAMA model (docs/gama/tango_demo.gaml): it publishes on /tango/requests."],
+  ];
+  const key = JSON.stringify(steps.map(x => [x[2], x[3]]));
+  if (key === stepsKey) return;
+  stepsKey = key;
+  const ol = $("#steps"); ol.innerHTML = "";
+  for (const [title, tab, state, detail, how] of steps) {
+    ol.append(h("li", { class: "step " + state, onclick: () => setTab(tab), title: "Open " + tab },
+      h("span", { class: "dot " + state }), h("b", {}, title), h("span", { class: "muted small" }, " — " + detail),
+      state !== "ok" ? h("div", { class: "small how" }, how) : null));
+  }
+}
+$("#placeall").addEventListener("click", async () => {
+  try { const r = await api("POST", "/api/place", {}); $("#placeinfo").textContent = "placing " + r.placing.join(", "); }
+  catch (e) { toast(e.message, true); }
+});
+$("#cancelplace").addEventListener("click", async () => {
+  for (const r of serverCfg.robots) await api("DELETE", `/api/robots/${r.name}/goto`).catch(() => {});
+  $("#placeinfo").textContent = "cancelled";
+});
+
+// ---------------------------------------------------------------- phone quick controls
+function renderPhoneControls() {
+  const box = $("#phonecontrols"); if (!box || !serverCfg) return;
+  box.innerHTML = "";
+  const cam = serverCfg.camera, m = cam.mobile;
+  if ((cam.source || "").trim().toLowerCase() !== "mobile") return;
+  const sel = (label, value, options, onchange, tip) => {
+    const s = h("select", {}, options.map(([v, t]) => h("option", { value: JSON.stringify(v), selected: JSON.stringify(v) === JSON.stringify(value) }, t)));
+    s.addEventListener("change", () => onchange(JSON.parse(s.value)));
+    return h("label", { class: "small", title: tip || "" }, label, " ", s);
+  };
+  const set = async mut => {
+    const c = clone(serverCfg.camera); mut(c);
+    try { await api("PATCH", "/api/config/camera?save=true", c); serverCfg.camera = c; draft.camera = clone(c); renderSection("#form-camera", "camera"); renderPhoneControls(); }
+    catch (e) { toast(e.message, true); }
+  };
+  box.append(h("div", { class: "row quick" },
+    sel("Resolution", [cam.width, cam.height], [[[640, 480], "640×480 (4:3)"], [[1280, 720], "1280×720 (16:9)"], [[1280, 960], "1280×960 (4:3)"], [[1920, 1080], "1920×1080 (16:9)"], [[1920, 1440], "1920×1440 (4:3)"]],
+      v => set(c => { c.width = v[0]; c.height = v[1]; }), "Higher = smaller tags still readable, but more Wi-Fi and CPU. 4:3 suits a square field"),
+    sel("FPS", cam.fps, [[15, "15"], [30, "30"], [60, "60"]], v => set(c => { c.fps = v; })),
+    sel("Max exposure", m.max_exposure_ms, [[null, "auto"], [20, "20 ms"], [10, "10 ms"], [5, "5 ms"]],
+      v => set(c => { c.mobile.max_exposure_ms = v; }), "Shorter = less motion blur, needs more light. 10 / 20 ms avoid flicker under 50 Hz lights"),
+    sel("Focus", m.focus, [["auto", "auto"], ["infinity", "fixed (far)"]], v => set(c => { c.mobile.focus = v; })),
+    sel("Lens", m.lens, [["back", "back"], ["front", "front"]], v => set(c => { c.mobile.lens = v; })),
+    sel("Torch", m.torch, [[false, "off"], [true, "on"]], v => set(c => { c.mobile.torch = v; })),
+    sel("JPEG", m.jpeg_quality, [[60, "60"], [80, "80"], [90, "90"]], v => set(c => { c.mobile.jpeg_quality = v; }), "Image compression: lower = less Wi-Fi bandwidth")));
+}
+
+// ---------------------------------------------------------------- printable tags
+function parseIds(t) {
+  const out = [];
+  for (const part of (t || "").split(/[,; ]+/)) {
+    const m = part.match(/^(\d+)(?:-(\d+))?$/); if (!m) continue;
+    const a = +m[1], b = m[2] ? +m[2] : a; for (let i = a; i <= Math.min(b, a + 200); i++) out.push(i);
+  }
+  return out;
+}
+function updateTagLinks() {
+  if (!serverCfg) return;
+  const ws = $("#tagsize").value || 100, rs = $("#rtagsize").value || 60;
+  const q = `size_mm=${ws}&robot_size_mm=${rs}`;
+  $("#printworld").href = `/print/tags?which=world&${q}`;
+  $("#printrobots").href = `/print/tags?which=robots&size_mm=${rs}`;
+  $("#printall").href = `/print/tags?which=all&${q}`;
+  $("#ziptags").href = `/api/tags/archive.zip?which=all&${q}`;
+  $("#printcustom").href = `/print/tags?which=custom&ids=${parseIds($("#tagids").value).join(",")}&size_mm=${ws}`;
+  const g = $("#taggallery"); g.innerHTML = "";
+  const add = (id, cap, front, mm) => g.append(h("figure", {},
+    h("img", { src: `/api/tags/${id}.svg?size_mm=${mm}${front ? "&front=true" : ""}`, alt: "tag " + id }),
+    h("figcaption", {}, cap, h("br"), h("a", { href: `/api/tags/${id}.svg?size_mm=${mm}${front ? "&front=true" : ""}`, download: `tag_${id}.svg` }, "SVG"), " · ",
+      h("a", { href: `/api/tags/${id}.png?size=800`, download: `tag_${id}.png` }, "PNG"))));
+  for (const t of serverCfg.world.tags) add(t.id, `#${t.id} boundary (${t.x}, ${t.y}) m`, false, ws);
+  for (const r of serverCfg.robots) if (r.tag_id >= 0) add(r.tag_id, `#${r.tag_id} ${r.name}`, true, rs);
+}
+["#tagsize", "#rtagsize", "#tagids"].forEach(id => $(id).addEventListener("input", updateTagLinks));
 
 // ---------------------------------------------------------------- setup checks
 let checksKey = "";
@@ -705,11 +870,15 @@ function renderMobile() {
   box.append(h("div", { class: "row" },
     h("button", { class: "ghost", onclick: async () => { if (confirm("Phones already paired will have to pair again. Continue?")) { await api("POST", "/api/mobile/new_code"); await loadConfig(true); } } }, "New code"),
     c ? h("button", { class: "ghost", onclick: () => api("POST", "/api/mobile/disconnect") }, "Disconnect the phone") : null));
-  box.append(h("p", { class: "muted small" }, "Settings sent to the phone: width/height/fps opposite and the \"mobile\" section (lens, JPEG quality, focus, torch). ",
+  box.append(h("p", { class: "muted small" }, "The quick settings above are applied to the phone at once; the rest is under Camera → Advanced settings → mobile. ",
     "Windows: allow Python through the firewall (private network) for ports ", `${m.port}${m.https_port ? " and " + m.https_port : ""} (TCP + UDP).`));
 }
-const updTag = () => { $("#taglink").href = `/api/tags/${$("#tagid").value}.png?size=${$("#tagsize").value}`; };
-$("#tagid").addEventListener("input", updTag); $("#tagsize").addEventListener("input", updTag); updTag();
+// help bubbles: hover on a desktop, tap on a phone / tablet
+document.addEventListener("click", e => {
+  const b = e.target.closest(".help");
+  $$(".help.open").forEach(x => { if (x !== b) x.classList.remove("open"); });
+  if (b) { b.classList.toggle("open"); e.stopPropagation(); }
+}, true);
 $("#apply").addEventListener("click", () => applyDraft(false));
 $("#applysave").addEventListener("click", () => applyDraft(true));
 $("#revert").addEventListener("click", async () => {
@@ -737,6 +906,7 @@ function setTab(name) {
   currentTab = name;
   $$("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $$(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
+  $("#stream0").src = name === "start" ? "/api/stream.mjpg" : "";
   $("#stream").src = name === "dash" ? "/api/stream.mjpg" : "";
   $("#stream2").src = name === "camera" ? "/api/stream.mjpg" : "";
   $("#stream3").src = name === "deploy" ? "/api/stream.mjpg" : "";
@@ -744,11 +914,12 @@ function setTab(name) {
   if (name === "network") loadNetwork().catch(() => {});
   if (name === "controllers") loadControllers().catch(() => {});
   try { localStorage.setItem("tab", name); } catch {}
+  history.replaceState(null, "", "#tab=" + name);  // shareable link to a tab
 }
 $$("#tabs button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
 
 async function pollStatus() {
-  try { status = await api("GET", "/api/status"); renderStatus(); if (currentTab === "deploy") renderIdentTable(); if (currentTab === "camera") renderMobile(); } catch {}
+  try { status = await api("GET", "/api/status"); renderStatus(); if (currentTab === "deploy") renderIdentTable(); if (currentTab === "camera") renderMobile(); if (currentTab === "start") renderSteps(); } catch {}
 }
 
 (async function init() {
@@ -757,7 +928,9 @@ async function pollStatus() {
   controllers = await api("GET", "/api/controllers");
   await loadConfig(true);
   await loadControllers();
-  let t = "dash"; try { t = localStorage.getItem("tab") || "dash"; } catch {}
+  let t = "start"; try { t = localStorage.getItem("tab") || "start"; } catch {}
+  const fromHash = location.hash.match(/tab=(\w+)/); if (fromHash) t = fromHash[1];
+  if (!$(`#tab-${t}`)) t = "start";
   setTab(t);
   pollStatus(); setInterval(pollStatus, 500);
   setInterval(pollLogs, 1000); pollLogs();
