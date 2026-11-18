@@ -40,7 +40,7 @@ class LoopbackBus(Bus):
     def network_info(self):
         return {
             "available": False,
-            "reason": "bus loopback (ROS 2 non utilisé)",
+            "reason": "loopback bus (ROS 2 not used)",
             "env": env_info(),
             "nodes": [],
             "topics": [],

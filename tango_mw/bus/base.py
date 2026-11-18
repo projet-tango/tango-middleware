@@ -49,22 +49,22 @@ def topic_map(cfg: AppConfig) -> List[Dict[str, str]]:
     """Every topic the middleware uses, for documentation / admin UI."""
     ns = cfg.ros.namespace
     rows = [
-        {"topic": ns_topic(ns, "world/state"), "type": "std_msgs/String", "dir": "pub", "doc": "État complet JSON (monde + robots, physique + logique)"},
-        {"topic": ns_topic(ns, "world/homography"), "type": "std_msgs/Float64MultiArray", "dir": "pub", "doc": "H image -> monde physique (3x3, ligne par ligne)"},
-        {"topic": ns_topic(ns, "world/homography_logical"), "type": "std_msgs/Float64MultiArray", "dir": "pub", "doc": "H image -> monde GAMA"},
-        {"topic": ns_topic(ns, "world/bounds"), "type": "geometry_msgs/PolygonStamped", "dir": "pub", "doc": "Contour du monde (physique)"},
-        {"topic": ns_topic(ns, "robots/state"), "type": "std_msgs/String", "dir": "pub", "doc": "Poses de tous les robots (JSON)"},
-        {"topic": ns_topic(ns, "status"), "type": "std_msgs/String", "dir": "pub", "doc": "Santé du middleware (JSON, 1 Hz)"},
-        {"topic": ns_topic(ns, "requests"), "type": "std_msgs/String", "dir": "sub", "doc": "Requêtes GAMA JSON {robot, speed, heading}"},
-        {"topic": ns_topic(ns, "estop"), "type": "std_msgs/Bool", "dir": "sub", "doc": "Arrêt d'urgence global"},
+        {"topic": ns_topic(ns, "world/state"), "type": "std_msgs/String", "dir": "pub", "doc": "Full JSON state (world + robots, physical + logical)"},
+        {"topic": ns_topic(ns, "world/homography"), "type": "std_msgs/Float64MultiArray", "dir": "pub", "doc": "H image -> physical world (3x3, row-major)"},
+        {"topic": ns_topic(ns, "world/homography_logical"), "type": "std_msgs/Float64MultiArray", "dir": "pub", "doc": "H image -> GAMA world"},
+        {"topic": ns_topic(ns, "world/bounds"), "type": "geometry_msgs/PolygonStamped", "dir": "pub", "doc": "World outline (physical)"},
+        {"topic": ns_topic(ns, "robots/state"), "type": "std_msgs/String", "dir": "pub", "doc": "Poses of all robots (JSON)"},
+        {"topic": ns_topic(ns, "status"), "type": "std_msgs/String", "dir": "pub", "doc": "Middleware health (JSON, 1 Hz)"},
+        {"topic": ns_topic(ns, "requests"), "type": "std_msgs/String", "dir": "sub", "doc": "GAMA requests, JSON {robot, speed, heading}"},
+        {"topic": ns_topic(ns, "estop"), "type": "std_msgs/Bool", "dir": "sub", "doc": "Global emergency stop"},
     ]
     for r in cfg.robots:
         if cfg.ros.publish_per_robot_topics:
-            rows.append({"topic": ns_topic(ns, f"robots/{r.name}/pose"), "type": "geometry_msgs/PoseStamped", "dir": "pub", "doc": f"Pose physique de {r.name}"})
-            rows.append({"topic": ns_topic(ns, f"robots/{r.name}/state"), "type": "std_msgs/String", "dir": "pub", "doc": f"État JSON de {r.name}"})
-            rows.append({"topic": ns_topic(ns, f"robots/{r.name}/request"), "type": "std_msgs/Float64MultiArray", "dir": "sub", "doc": "[vitesse, heading]"})
+            rows.append({"topic": ns_topic(ns, f"robots/{r.name}/pose"), "type": "geometry_msgs/PoseStamped", "dir": "pub", "doc": f"Physical pose of {r.name}"})
+            rows.append({"topic": ns_topic(ns, f"robots/{r.name}/state"), "type": "std_msgs/String", "dir": "pub", "doc": f"JSON state of {r.name}"})
+            rows.append({"topic": ns_topic(ns, f"robots/{r.name}/request"), "type": "std_msgs/Float64MultiArray", "dir": "sub", "doc": "[speed, heading]"})
         t = {"twist": "geometry_msgs/Twist", "wheels": "std_msgs/Float64MultiArray", "json": "std_msgs/String"}[r.output.type]
-        rows.append({"topic": output_topic(r), "type": t, "dir": "pub", "doc": f"Commandes de {r.name} ({r.output.type})"})
+        rows.append({"topic": output_topic(r), "type": t, "dir": "pub", "doc": f"Commands for {r.name} ({r.output.type})"})
     return rows
 
 

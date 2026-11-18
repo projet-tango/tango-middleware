@@ -22,11 +22,11 @@ def _speed_scale(mode: str, err: float, threshold: float) -> float:
 
 
 class Proportional(Controller):
-    """Le plus simple : ω = k·erreur de cap, v = vitesse demandée × cos(erreur)."""
+    """The simplest: ω = k·heading error, v = requested speed × cos(error)."""
 
     name = "proportional"
     params = {
-        "k": Param(2.0, min=0.0, max=20.0, step=0.1, description="Gain proportionnel sur le cap"),
+        "k": Param(2.0, min=0.0, max=20.0, step=0.1, description="Proportional gain on the heading"),
         "max_angular": Param(2.0, min=0.0, max=20.0, description="Saturation ω (rad/s)"),
     }
 
@@ -39,19 +39,19 @@ class Proportional(Controller):
 
 
 class HeadingPID(Controller):
-    """PID sur l'erreur de cap, réduction de vitesse quand l'erreur est grande,
-    rotation sur place au-delà d'un seuil. Option marche arrière automatique."""
+    """PID on the heading error, slows down when the error is large,
+    turns in place above a threshold. Optional automatic reverse."""
 
     name = "heading_pid"
     params = {
-        "kp": Param(2.5, min=0.0, max=50.0, step=0.1, description="Gain proportionnel"),
-        "ki": Param(0.0, min=0.0, max=50.0, step=0.05, description="Gain intégral"),
-        "kd": Param(0.1, min=0.0, max=10.0, step=0.01, description="Gain dérivé (sur la mesure)"),
-        "i_limit": Param(1.0, min=0.0, max=100.0, description="Anti-windup : |intégrale| max"),
+        "kp": Param(2.5, min=0.0, max=50.0, step=0.1, description="Proportional gain"),
+        "ki": Param(0.0, min=0.0, max=50.0, step=0.05, description="Integral gain"),
+        "kd": Param(0.1, min=0.0, max=10.0, step=0.01, description="Derivative gain (on the measurement)"),
+        "i_limit": Param(1.0, min=0.0, max=100.0, description="Anti-windup: max |integral|"),
         "max_angular": Param(3.0, min=0.0, max=30.0, description="Saturation ω (rad/s)"),
-        "turn_in_place": Param(1.2, min=0.0, max=math.pi, description="Erreur (rad) au-delà de laquelle v = 0"),
-        "speed_scaling": Param("cos", choices=["cos", "linear", "none"], description="Réduction de v selon l'erreur"),
-        "allow_reverse": Param(False, description="Reculer plutôt que faire demi-tour si la cible est derrière"),
+        "turn_in_place": Param(1.2, min=0.0, max=math.pi, description="Error (rad) above which v = 0"),
+        "speed_scaling": Param("cos", choices=["cos", "linear", "none"], description="How v is reduced with the error"),
+        "allow_reverse": Param(False, description="Back up instead of turning around when the target is behind"),
     }
 
     def reset(self) -> None:
@@ -82,15 +82,15 @@ class HeadingPID(Controller):
 
 
 class SpeedHeadingPID(HeadingPID):
-    """HeadingPID + boucle de vitesse PI sur la vitesse mesurée par la caméra
-    (feed-forward de la vitesse demandée + correction)."""
+    """HeadingPID + PI speed loop on the speed measured by the camera
+    (feed-forward of the requested speed + correction)."""
 
     name = "speed_heading_pid"
     params = {
         **HeadingPID.params,
-        "kp_v": Param(0.5, min=0.0, max=10.0, step=0.05, description="Gain P vitesse"),
-        "ki_v": Param(0.5, min=0.0, max=10.0, step=0.05, description="Gain I vitesse"),
-        "iv_limit": Param(0.3, min=0.0, max=5.0, description="Anti-windup vitesse (m/s)"),
+        "kp_v": Param(0.5, min=0.0, max=10.0, step=0.05, description="Speed P gain"),
+        "ki_v": Param(0.5, min=0.0, max=10.0, step=0.05, description="Speed I gain"),
+        "iv_limit": Param(0.3, min=0.0, max=5.0, description="Speed anti-windup (m/s)"),
     }
 
     def reset(self) -> None:
@@ -115,13 +115,13 @@ class SpeedHeadingPID(HeadingPID):
 
 
 class Holonomic(Controller):
-    """Robots omnidirectionnels : la vitesse monde demandée est projetée dans le
-    repère robot (vx, vy) ; le cap est tenu (ou aligné sur le mouvement)."""
+    """Omnidirectional robots: the requested world velocity is projected into the
+    robot frame (vx, vy); the heading is held (or aligned with the motion)."""
 
     name = "holonomic"
     params = {
-        "orientation": Param("hold", choices=["hold", "face_motion"], description="Garder le cap initial ou s'aligner sur le mouvement"),
-        "k_theta": Param(2.0, min=0.0, max=20.0, description="Gain sur l'orientation"),
+        "orientation": Param("hold", choices=["hold", "face_motion"], description="Keep the initial heading or align with the motion"),
+        "k_theta": Param(2.0, min=0.0, max=20.0, description="Gain on the orientation"),
         "max_angular": Param(2.0, min=0.0, max=20.0),
     }
 
@@ -140,8 +140,8 @@ class Holonomic(Controller):
 
 
 class Passthrough(Controller):
-    """Aucune boucle fermée : envoie v = vitesse demandée et ω = champ `angular`
-    de la requête (JSON) — utile si GAMA calcule lui-même les commandes."""
+    """No closed loop: sends v = requested speed and ω = the request's `angular`
+    field (JSON) — useful when GAMA computes the commands itself."""
 
     name = "passthrough"
     params = {}

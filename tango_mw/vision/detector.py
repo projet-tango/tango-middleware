@@ -73,7 +73,7 @@ class TagDetector:
                 self.backend = "pupil"
             except Exception as exc:  # pragma: no cover - optional dependency
                 if self.backend == "pupil":
-                    log.warning("pupil-apriltags indisponible (%s), repli sur OpenCV", exc)
+                    log.warning("pupil-apriltags unavailable (%s), falling back to OpenCV", exc)
                 self.backend = "opencv"
         if self.backend == "opencv":
             params = cv2.aruco.DetectorParameters()

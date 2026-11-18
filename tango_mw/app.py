@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from .bus import Bus, LoopbackBus, make_bus
-from .config import AppConfig, RobotConfig, save_config
+from .config import AppConfig, RobotConfig, load_config, save_config
 from .control.base import Request
 from .control.calibration import apply_result
 from .control.manager import ControlManager
@@ -21,6 +21,8 @@ from .control.registry import ControllerRegistry
 from .frames import LogicalFrame, apply_h
 from .vision.camera import FrameSource, OpenCVSource, postprocess
 from .vision.detector import TagDetector
+from .vision.mobile import MobileHub, MobileSource, new_pairing_code
+from .vision.quality import SetupChecks
 from .vision.synthetic import SyntheticSource
 from .vision.tracker import Tracker, WorldSnapshot
 
@@ -73,6 +75,9 @@ class App:
         self._src_lock = threading.Lock()
         self.source: Optional[FrameSource] = None
         self.camera_error: Optional[str] = None
+        self.mobile: Optional[MobileHub] = None  # phone receiver, created when camera.source == 'mobile'
+        self.last_frame_time = 0.0
+        self.checks = SetupChecks()  # lighting / image quality diagnostics
         self._next_open = 0.0
         self.snapshot = WorldSnapshot()
         self.frame: Optional[np.ndarray] = None
@@ -85,13 +90,16 @@ class App:
 
     # ================================================================== lifecycle
     def start(self) -> None:
+        if self.cfg.camera.is_mobile and not self.cfg.camera.mobile.pairing_code:
+            self.cfg.camera.mobile.pairing_code = new_pairing_code()
+            self._persist_pairing_code()
         self._start_bus()
         self._running = True
         for name, fn in (("vision", self._vision_loop), ("control", self._control_loop), ("publish", self._publish_loop)):
             t = threading.Thread(target=fn, name=name, daemon=True)
             t.start()
             self._threads.append(t)
-        log.info("Middleware démarré (bus: %s)", self.bus.kind)
+        log.info("Middleware started (bus: %s)", self.bus.kind)
 
     def stop(self) -> None:
         # send a last stop to every robot
@@ -108,6 +116,9 @@ class App:
             if self.source:
                 self.source.close()
                 self.source = None
+            if self.mobile:
+                self.mobile.stop()
+                self.mobile = None
         self.bus.stop()
 
     def _start_bus(self) -> None:
@@ -130,13 +141,19 @@ class App:
         try:
             if cam.source.strip().lower() == "synthetic":
                 self.source = SyntheticSource(self.cfg)
+            elif cam.is_mobile:
+                if self.mobile is None:
+                    hub = MobileHub(self.cfg, self._data_dir())
+                    hub.start()
+                    self.mobile = hub
+                self.source = MobileSource(self.mobile)
             else:
                 self.source = OpenCVSource(cam)
             self.camera_error = None
         except Exception as exc:
             self.source = None
             if self.camera_error != str(exc):
-                log.error("Caméra: %s", exc)
+                log.error("Camera: %s", exc)
             self.camera_error = str(exc)
             self._next_open = time.time() + 2.0
 
@@ -149,13 +166,17 @@ class App:
                     self._open_source()
                 src, det, cam = self.source, self.detector, self.cfg.camera
             if src is None:
+                if self.checks.history:
+                    self.checks.reset()
                 time.sleep(0.1)
                 continue
             ok, frame, stamp = src.read()
             if not ok or frame is None:
                 failures += 1
-                if failures > 30:
-                    log.warning("Caméra: plus d'images, réouverture")
+                if failures == 10 and self.checks.history:  # ~5 s without frames for a phone
+                    self.checks.reset()
+                if failures > 30 and src.reopen_on_failure:
+                    log.warning("Camera: no more frames, reopening")
                     with self._src_lock:
                         if self.source is src:
                             src.close()
@@ -173,11 +194,14 @@ class App:
                 dets = det.detect(frame)
                 snap = self.tracker.process(dets, stamp, (frame.shape[1], frame.shape[0]), self._fps)
             except Exception as exc:  # pragma: no cover
-                log.exception("Erreur de détection: %s", exc)
+                log.exception("Detection error: %s", exc)
                 continue
             self.snapshot = snap
             self.frame = frame
             self.frame_seq += 1
+            self.last_frame_time = time.time()
+            client = self.mobile.client if self.mobile else None
+            self.checks.update(frame, dets, snap, self.cfg, self._fps, client.stats if client else None)
 
     # ================================================================== control
     def _emit(self, robot: RobotConfig, raw: Dict[str, Any]) -> None:
@@ -198,13 +222,13 @@ class App:
                 last_reload = now
                 try:
                     if self.registry.reload():
-                        log.info("Contrôleurs rechargés")
+                        log.info("Controllers reloaded")
                 except Exception:  # pragma: no cover
-                    log.exception("rechargement des contrôleurs")
+                    log.exception("controller reload")
             try:
                 self.manager.step(now, self.snapshot)
             except Exception:  # pragma: no cover
-                log.exception("boucle de contrôle")
+                log.exception("control loop")
             rate.period = 1.0 / self.cfg.ros.control_rate
             rate.sleep()
 
@@ -236,10 +260,10 @@ class App:
             if ok:
                 self.last_request_time = now
             else:
-                log.debug("requête pour un robot inconnu: %s", robot)
+                log.debug("request for an unknown robot: %s", robot)
             return ok
         except Exception as exc:
-            log.warning("requête invalide pour %s: %s", robot, exc)
+            log.warning("invalid request for %s: %s", robot, exc)
             return False
 
     def _job_done(self, robot: str, job) -> None:
@@ -255,16 +279,16 @@ class App:
         if r is None:
             return
         if tag_id in {t.id for t in cfg.world.tags}:
-            raise ValueError(f"le tag #{tag_id} est un tag de monde")
+            raise ValueError(f"tag #{tag_id} is a world tag")
         other = next((o for o in cfg.robots if o.tag_id == tag_id and o.name != robot), None)
         old = r.tag_id
         r.tag_id = -10_000  # temporary, keeps tag ids unique during the swap
         if other is not None:
             other.tag_id = old if old != tag_id else min([x.tag_id for x in cfg.robots] + [0]) - 1
-            log.warning("Tag #%d retiré de %s (attribué à %s), %s reçoit #%d", tag_id, other.name, robot, other.name, other.tag_id)
+            log.warning("Tag #%d taken from %s (given to %s), %s gets #%d", tag_id, other.name, robot, other.name, other.tag_id)
         r.tag_id = tag_id
         cfg = AppConfig.model_validate(cfg.model_dump())
-        log.info("Robot %s associé au tag #%d", robot, tag_id)
+        log.info("Robot %s assigned to tag #%d", robot, tag_id)
         self.apply_config(cfg)
         if self.config_path:
             self.save()
@@ -275,7 +299,7 @@ class App:
         if r is None:
             return
         r.calibration = apply_result(r.calibration, result)
-        log.info("Calibration de %s appliquée: %s", robot, result)
+        log.info("Calibration of %s applied: %s", robot, result)
         self.apply_config(cfg)
         if self.config_path:
             self.save()
@@ -312,6 +336,7 @@ class App:
             "reprojection_error": snap.reprojection_error,
             "homography_age": (now - snap.homography_stamp) if H is not None else None,
             "homography_locked": snap.homography_locked,
+            "camera_moved_age": (now - snap.camera_moved_at) if snap.camera_moved_at else None,
             "world_tags_expected": [t.id for t in self.cfg.world.tags],
             "world_tags_visible": snap.world_tags_visible,
             "unknown_tags": snap.unknown_tags,
@@ -322,17 +347,32 @@ class App:
             "robots": {n: self.robot_json(n, snap, now) for n in snap.robots},
         }
 
+    def camera_problem(self) -> Optional[str]:
+        if self.camera_error:
+            return self.camera_error
+        src = self.source
+        if src is None:
+            return "camera closed"
+        reason = src.status_error()
+        if reason:
+            return reason
+        if time.time() - self.last_frame_time > 3.0:
+            return "no frame for more than 3 s"
+        return None
+
     def health(self) -> Dict[str, Any]:
         snap = self.snapshot
         ctrl = self.manager.describe()
+        problem = self.camera_problem()
         return {
             "stamp": time.time(),
             "uptime": time.time() - self.started_at,
             "bus": self.bus.kind,
-            "camera_ok": self.source is not None and self.camera_error is None,
-            "camera_error": self.camera_error,
+            "camera_ok": problem is None,
+            "camera_error": problem,
             "fps": snap.fps,
             "homography_valid": snap.H is not None,
+            "setup_checks": self.checks.result["overall"],
             "estop": ctrl["estop"],
             "robots": {n: {"status": r["status"], "visible": snap.robots[n].visible if n in snap.robots else False}
                        for n, r in ctrl["robots"].items()},
@@ -360,8 +400,13 @@ class App:
             rate.sleep()
 
     # ================================================================== config
+    def _data_dir(self) -> Path:
+        return self.config_path.parent if self.config_path else self.base_dir / "config"
+
     def apply_config(self, new: AppConfig) -> None:
         old = self.cfg
+        if new.camera.is_mobile and not new.camera.mobile.pairing_code:
+            new.camera.mobile.pairing_code = old.camera.mobile.pairing_code or new_pairing_code()
         self.cfg = new
         cam_changed = old.camera != new.camera or (
             new.camera.source == "synthetic" and (old.world != new.world or old.detector.family != new.detector.family))
@@ -375,6 +420,18 @@ class App:
             elif isinstance(self.source, SyntheticSource):
                 self.source.app_cfg = new
                 self.source.sync_robots(new.robots)
+            if self.mobile is not None:
+                if not new.camera.is_mobile:
+                    self.mobile.stop()
+                    self.mobile = None
+                else:
+                    try:
+                        self.mobile.update_config(new)
+                    except Exception as exc:
+                        log.error("Phone receiver: %s", exc)
+                        self.mobile = None
+                        self.source = None
+                        self._next_open = time.time() + 2.0
         if old.world != new.world or old.camera.camera_matrix != new.camera.camera_matrix or old.camera.dist_coeffs != new.camera.dist_coeffs:
             self.tracker.set_world(new.world, new.camera)
         self.tracker.set_robots(new.robots)
@@ -384,7 +441,7 @@ class App:
         self.manager.set_config(new)
         ros_keys = ("bus", "node_name", "namespace", "domain_id", "qos_depth", "publish_per_robot_topics")
         if any(getattr(old.ros, k) != getattr(new.ros, k) for k in ros_keys):
-            log.info("Configuration ROS modifiée: redémarrage du bus")
+            log.info("ROS configuration changed: restarting the bus")
             self.bus.stop()
             self._start_bus()
         else:
@@ -397,8 +454,30 @@ class App:
         save_config(self.cfg, path)
         self.config_path = path
         self._dirty = False
-        log.info("Configuration enregistrée dans %s", path)
+        log.info("Configuration saved to %s", path)
         return path
+
+    def _persist_pairing_code(self) -> None:
+        """Write only the pairing code to the YAML (the code must survive restarts, otherwise
+        paired phones are lost; command line overrides such as --camera must not be saved)."""
+        if not (self.config_path and self.config_path.exists()):
+            return
+        try:
+            on_disk = load_config(self.config_path)
+            on_disk.camera.mobile.pairing_code = self.cfg.camera.mobile.pairing_code
+            save_config(on_disk, self.config_path)
+        except Exception as exc:  # pragma: no cover
+            log.warning("Pairing code not saved: %s", exc)
+
+    def new_pairing_code(self) -> str:
+        """Generate a new phone pairing code (connected phones must pair again) and save it."""
+        cfg = self.cfg.model_copy(deep=True)
+        cfg.camera.mobile.pairing_code = new_pairing_code()
+        self.apply_config(cfg)
+        if self.config_path:
+            self.save()
+        log.info("New phone pairing code: %s", cfg.camera.mobile.pairing_code)
+        return cfg.camera.mobile.pairing_code
 
     def relock_homography(self) -> None:
         self.tracker.relock()
@@ -425,7 +504,9 @@ class App:
                 "last_request_age": (time.time() - self.last_request_time) if self.last_request_time else None,
             },
             "bus": {"kind": self.bus.kind, "errors": dict(self.bus.errors), "error": self.bus_error},
-            "camera": {"error": self.camera_error, "info": info, "source": self.cfg.camera.source},
+            "camera": {"error": self.camera_problem(), "info": info, "source": self.cfg.camera.source},
+            "mobile": self.mobile.describe() if self.mobile else None,
+            "checks": self.checks.result,
             "registry_errors": dict(self.registry.errors),
             "config_dirty": self._dirty,
             "config_path": str(self.config_path) if self.config_path else None,
@@ -465,7 +546,7 @@ class App:
                 p = apply_h(Hi, np.array([[o.x, o.y], [o.x + L_arrow * math.cos(o.theta), o.y + L_arrow * math.sin(o.theta)]])).astype(int)
                 cv2.arrowedLine(img, tuple(p[0]), tuple(p[1]), (255, 0, 255), thick + 1, cv2.LINE_AA, tipLength=0.3)
                 rt = self.manager.robots.get(name)
-                if rt and rt.request and rt.status == "actif":
+                if rt and rt.request and rt.status == "active":
                     h = rt.request.heading
                     q = apply_h(Hi, np.array([[o.x, o.y], [o.x + L_arrow * math.cos(h), o.y + L_arrow * math.sin(h)]])).astype(int)
                     cv2.arrowedLine(img, tuple(q[0]), tuple(q[1]), (0, 255, 255), thick, cv2.LINE_AA, tipLength=0.3)
@@ -473,7 +554,7 @@ class App:
         if snap.reprojection_error is not None:
             txt += f" err {snap.reprojection_error * 1000:.1f}mm"
         if self.manager.estop:
-            txt += "  ARRET D'URGENCE"
+            txt += "  EMERGENCY STOP"
         cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(img, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, int(quality or self.cfg.web.jpeg_quality)])

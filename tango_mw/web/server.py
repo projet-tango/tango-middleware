@@ -19,6 +19,7 @@ from ..config import AppConfig
 from ..control.calibration import DEFAULT_OPTIONS, PROCEDURES
 from ..vision.camera import probe_cameras
 from ..vision.detector import render_tag
+from ..vision.mobile import qr_png
 
 STATIC = Path(__file__).parent / "static"
 
@@ -42,6 +43,11 @@ def create_web_app(app: App) -> FastAPI:
     @api.get("/api/status")
     def status():
         return JSONResponse(json.loads(json.dumps(app.status(), default=float)))
+
+    @api.get("/api/checks")
+    def setup_checks():
+        """Lighting / image quality checks (ok, warn, bad, unknown) with advice."""
+        return app.checks.result
 
     @api.get("/api/logs")
     def logs(after: int = 0):
@@ -76,7 +82,7 @@ def create_web_app(app: App) -> FastAPI:
     def patch_section(section: str, data: Any = Body(...), save: bool = False):
         cur = app.cfg.model_dump(mode="json")
         if section not in cur:
-            raise HTTPException(404, f"section inconnue: {section}")
+            raise HTTPException(404, f"unknown section: {section}")
         cur[section] = data
         try:
             cfg = AppConfig.model_validate(cur)
@@ -96,7 +102,7 @@ def create_web_app(app: App) -> FastAPI:
     def snapshot():
         jpg = app.annotated_jpeg()
         if jpg is None:
-            raise HTTPException(503, "pas d'image")
+            raise HTTPException(503, "no image")
         return Response(jpg, media_type="image/jpeg")
 
     @api.get("/api/stream.mjpg")
@@ -130,6 +136,30 @@ def create_web_app(app: App) -> FastAPI:
         ok, buf = cv2.imencode(".png", img)
         return Response(buf.tobytes(), media_type="image/png")
 
+    # ------------------------------------------------------------------ phone camera
+    @api.get("/api/mobile")
+    def mobile_status():
+        if app.mobile is None:
+            return {"running": False, "source_is_mobile": app.cfg.camera.is_mobile, "error": app.camera_error}
+        return {**app.mobile.describe(), "source_is_mobile": True}
+
+    @api.post("/api/mobile/new_code")
+    def mobile_new_code():
+        return {"pairing_code": app.new_pairing_code()}
+
+    @api.post("/api/mobile/disconnect")
+    def mobile_disconnect():
+        if app.mobile:
+            app.mobile.kick()
+        return {"ok": True}
+
+    @api.get("/api/mobile/qr.png")
+    def mobile_qr(data: str = Query(..., max_length=400)):
+        try:
+            return Response(qr_png(data), media_type="image/png", headers={"Cache-Control": "max-age=3600"})  # content depends only on the URL
+        except Exception as exc:
+            _bad(exc)
+
     @api.post("/api/world/relock")
     def relock():
         app.relock_homography()
@@ -144,7 +174,7 @@ def create_web_app(app: App) -> FastAPI:
     @api.post("/api/robots/{name}/request")
     def manual_request(name: str, data: Dict[str, Any] = Body(...)):
         if not app.handle_request(name, data, "web"):
-            raise HTTPException(404, f"robot inconnu ou requête invalide: {name}")
+            raise HTTPException(404, f"unknown robot or invalid request: {name}")
         return {"ok": True}
 
     @api.get("/api/calibration/procedures")
@@ -156,7 +186,7 @@ def create_web_app(app: App) -> FastAPI:
         try:
             job = app.manager.start_calibration(name, data.get("procedure", "full"), data.get("options") or {})
         except KeyError:
-            raise HTTPException(404, f"robot inconnu: {name}")
+            raise HTTPException(404, f"unknown robot: {name}")
         except Exception as exc:
             _bad(exc)
         return job.describe()
@@ -203,7 +233,7 @@ def create_web_app(app: App) -> FastAPI:
         try:
             job = app.manager.start_identify(name, data.get("options") or {})
         except KeyError:
-            raise HTTPException(404, f"robot inconnu: {name}")
+            raise HTTPException(404, f"unknown robot: {name}")
         except Exception as exc:
             _bad(exc)
         return job.describe()
@@ -211,7 +241,7 @@ def create_web_app(app: App) -> FastAPI:
     @api.post("/api/robots/{name}/assign_tag")
     def assign_tag(name: str, tag_id: int = Body(..., embed=True)):
         if app.cfg.robot(name) is None:
-            raise HTTPException(404, f"robot inconnu: {name}")
+            raise HTTPException(404, f"unknown robot: {name}")
         try:
             app.assign_tag(name, tag_id)
         except Exception as exc:
@@ -230,7 +260,7 @@ def create_web_app(app: App) -> FastAPI:
 
     def _check_edit():
         if not app.cfg.web.allow_code_edit:
-            raise HTTPException(403, "édition de code désactivée (web.allow_code_edit)")
+            raise HTTPException(403, "code editing disabled (web.allow_code_edit)")
 
     @api.get("/api/controllers/source/{filename}")
     def get_source(filename: str):
@@ -248,7 +278,7 @@ def create_web_app(app: App) -> FastAPI:
         try:
             path = app.registry.write_source(filename, data["code"])
         except SyntaxError as exc:
-            raise HTTPException(400, f"Erreur de syntaxe ligne {exc.lineno}: {exc.msg}")
+            raise HTTPException(400, f"Syntax error line {exc.lineno}: {exc.msg}")
         except Exception as exc:
             _bad(exc)
         return {"path": str(path), "errors": app.registry.errors.get(str(path))}
@@ -259,7 +289,7 @@ def create_web_app(app: App) -> FastAPI:
         try:
             path = app.registry.create(data["name"])
         except FileExistsError as exc:
-            raise HTTPException(409, f"existe déjà: {exc}")
+            raise HTTPException(409, f"already exists: {exc}")
         except Exception as exc:
             _bad(exc)
         return {"path": str(path), "filename": path.name}

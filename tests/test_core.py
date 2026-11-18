@@ -227,3 +227,17 @@ def test_discover_robots_from_topics():
     r = discover_robots(net, "/{name}/cmd_vel", cfg)
     assert [(x["name"], x["configured"]) for x in r["robots"]] == [("alpha", True), ("beta", False)]
     assert not discover_robots({"available": False}, "/{name}/cmd_vel", cfg)["available"]
+
+
+def test_service_files(tmp_path):
+    from tango_mw import service
+
+    s = service.Spec(workdir=tmp_path, config=tmp_path / "config" / "config.yaml", python="/usr/bin/python3",
+                     ros_setup="/opt/ros/jazzy/setup.bash", extra_args="--bus ros2")
+    unit = service.systemd_unit(s)
+    assert "Restart=always" in unit and "source /opt/ros/jazzy/setup.bash && exec /usr/bin/python3 -m tango_mw run" in unit
+    assert "--bus ros2" in unit
+    win = service.windows_script(s)
+    assert ":loop" in win and 'call "/opt/ros/jazzy/setup.bash"' in win and "\r\n" in win
+    plist = service.launchd_plist(s, tmp_path)
+    assert "<key>KeepAlive</key><true/>" in plist and "&amp;&amp; exec" in plist

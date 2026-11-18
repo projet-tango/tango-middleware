@@ -20,42 +20,68 @@ class _Model(BaseModel):
 class SyntheticConfig(_Model):
     """Virtual camera + kinematic simulator, used to test without hardware."""
 
-    px_per_m: float = Field(400.0, description="Résolution du rendu (pixels par mètre)")
-    perspective: float = Field(0.06, description="Distorsion de perspective simulée (0 = vue de dessus parfaite)")
-    noise_px: float = Field(0.0, description="Bruit gaussien sur l'image (niveaux de gris)")
-    world_tag_size: float = Field(0.10, description="Côté des tags de coin (m)")
-    robot_tag_size: float = Field(0.08, description="Côté des tags robots (m)")
-    randomize_dynamics: bool = Field(True, description="Gains/offsets 'vrais' aléatoires pour tester la calibration")
-    extra_robots: int = Field(0, ge=0, description="Robots simulés absents de la config (pour tester le scan / l'identification)")
+    px_per_m: float = Field(400.0, description="Rendering resolution (pixels per metre)")
+    perspective: float = Field(0.06, description="Simulated perspective distortion (0 = perfect top view)")
+    noise_px: float = Field(0.0, description="Gaussian image noise (grey levels)")
+    world_tag_size: float = Field(0.10, description="Side of the corner tags (m)")
+    robot_tag_size: float = Field(0.08, description="Side of the robot tags (m)")
+    randomize_dynamics: bool = Field(True, description="Random 'true' gains/offsets to test calibration")
+    extra_robots: int = Field(0, ge=0, description="Simulated robots missing from the config (to practise scanning / identification)")
     seed: int = 1
+
+
+class MobileCameraConfig(_Model):
+    """Phone used as the camera (source 'mobile'): the phone app pushes JPEG frames over WebSocket."""
+
+    host: str = Field("0.0.0.0", description="Listen address of the phone receiver (separate from the web interface)")
+    port: int = Field(47800, description="HTTP/WebSocket port of the Android app + UDP port for automatic discovery")
+    https_port: Optional[int] = Field(
+        47801, description="HTTPS port of the web camera page (iPhone/browser, self-signed certificate). Empty = disabled")
+    require_code: bool = Field(True, description="Require the pairing code (recommended: otherwise any device on the network can send frames)")
+    pairing_code: str = Field("", description="Pairing code (generated automatically when empty)")
+    lens: Literal["back", "front"] = Field("back", description="Phone lens to use")
+    jpeg_quality: int = Field(80, ge=30, le=100, description="JPEG quality sent by the phone")
+    focus: Literal["auto", "infinity"] = Field("auto", description="infinity: fixed focus (avoids autofocus 'hunting')")
+    exposure_compensation: int = Field(0, description="Exposure compensation (in steps, phone dependent)")
+    torch: bool = Field(False, description="Keep the flash on")
+    max_exposure_ms: Optional[float] = Field(
+        None, gt=0, le=1000,
+        description="Cap the exposure time (ms) to limit motion blur; the phone raises the ISO instead. "
+                    "Empty = phone auto-exposure. Under mains lighting prefer 10 or 20 (50 Hz) / 8.3 or 16.7 (60 Hz) to avoid flicker")
+    stale_after: float = Field(3.0, gt=0, description="A phone that has sent no frame for (s) can be replaced by another one")
 
 
 class CameraConfig(_Model):
     source: str = Field(
         "synthetic",
-        description="Index caméra (ex: 0), chemin de fichier vidéo, URL (rtsp/http) ou 'synthetic'",
+        description="Camera index (e.g. 0), video file path, URL (rtsp/http), 'mobile' (phone) or 'synthetic'",
     )
     backend: Literal["auto", "dshow", "msmf", "v4l2", "avfoundation", "gstreamer", "ffmpeg"] = "auto"
     width: Optional[int] = 1280
     height: Optional[int] = 720
     fps: Optional[float] = 30.0
-    fourcc: Optional[str] = Field(None, description="ex: MJPG (souvent nécessaire pour le 1080p en USB)")
-    exposure: Optional[float] = Field(None, description="Exposition manuelle (valeur dépend du driver)")
+    fourcc: Optional[str] = Field(None, description="e.g. MJPG (often required for 1080p over USB)")
+    exposure: Optional[float] = Field(None, description="Manual exposure (value depends on the driver)")
     autofocus: Optional[bool] = None
     rotate: Literal[0, 90, 180, 270] = 0
     flip: Literal["none", "horizontal", "vertical", "both"] = "none"
-    camera_matrix: Optional[List[List[float]]] = Field(None, description="Intrinsèques 3x3 (optionnel, pour corriger la distorsion)")
+    camera_matrix: Optional[List[List[float]]] = Field(None, description="3x3 intrinsics (optional, to correct lens distortion)")
     dist_coeffs: Optional[List[float]] = None
     synthetic: SyntheticConfig = SyntheticConfig()
+    mobile: MobileCameraConfig = MobileCameraConfig()
+
+    @property
+    def is_mobile(self) -> bool:
+        return self.source.strip().lower() == "mobile"
 
 
 # --------------------------------------------------------------------------- detection
 class DetectorConfig(_Model):
     family: Literal["tag16h5", "tag25h9", "tag36h10", "tag36h11"] = "tag36h11"
     backend: Literal["auto", "opencv", "pupil"] = "opencv"
-    decimate: float = Field(1.0, description="Sous-échantillonnage de l'image avant détection (>1 = plus rapide)")
+    decimate: float = Field(1.0, description="Image downsampling before detection (>1 = faster)")
     corner_refinement: Literal["none", "subpix", "contour", "apriltag"] = "subpix"
-    min_marker_perimeter: float = Field(0.02, description="Périmètre minimal relatif à la taille de l'image")
+    min_marker_perimeter: float = Field(0.02, description="Minimal perimeter relative to the image size")
 
 
 # --------------------------------------------------------------------------- world
@@ -82,65 +108,67 @@ class WorldConfig(_Model):
             WorldTag(id=2, x=1.6, y=1.0),
             WorldTag(id=3, x=0.0, y=1.0),
         ],
-        description="Tags délimitant le monde et leurs coordonnées physiques (centre du tag, en m)",
+        description="Tags delimiting the world and their physical coordinates (tag centre, in m)",
     )
     use_tag_corners: bool = Field(
         False,
-        description="Utiliser aussi les 4 coins des tags de monde (suppose des tags alignés, haut vers +y)",
+        description="Also use the 4 corners of the world tags (assumes aligned tags, top towards +y)",
     )
-    tag_size: float = Field(0.10, description="Côté des tags de monde (m), utilisé si use_tag_corners")
-    min_tags: int = Field(4, ge=4, description="Nombre minimal de tags de monde visibles pour (re)calculer H")
+    tag_size: float = Field(0.10, description="Side of the world tags (m), used with use_tag_corners")
+    min_tags: int = Field(4, ge=4, description="Minimal number of visible world tags to (re)compute H")
     homography_mode: Literal["continuous", "locked"] = Field(
         "continuous",
-        description="continuous: H recalculée à chaque image ; locked: calculée une fois puis figée (re-verrouillable)",
+        description="continuous: H recomputed on every frame; locked: computed once then frozen (can be re-locked)",
     )
-    smoothing: float = Field(0.0, ge=0.0, lt=1.0, description="Lissage exponentiel de H (0 = aucun)")
-    ransac_threshold: float = Field(0.02, description="Seuil RANSAC (unités monde) si > 4 points")
-    max_reprojection_error: float = Field(0.05, description="H rejetée si l'erreur moyenne dépasse ce seuil (m)")
-    pose_smoothing: float = Field(0.3, ge=0.0, lt=1.0, description="Lissage exponentiel des poses robots")
-    velocity_smoothing: float = Field(0.6, ge=0.0, lt=1.0, description="Lissage exponentiel des vitesses estimées")
+    relock_on_move: bool = Field(
+        True, description="locked mode: recompute H when the boundary tags no longer match it (camera bumped)")
+    smoothing: float = Field(0.0, ge=0.0, lt=1.0, description="Exponential smoothing of H (0 = none)")
+    ransac_threshold: float = Field(0.02, description="RANSAC threshold (world units) when > 4 points")
+    max_reprojection_error: float = Field(0.05, description="H rejected when the mean error exceeds this threshold (m)")
+    pose_smoothing: float = Field(0.3, ge=0.0, lt=1.0, description="Exponential smoothing of robot poses")
+    velocity_smoothing: float = Field(0.6, ge=0.0, lt=1.0, description="Exponential smoothing of estimated velocities")
     parallax: ParallaxConfig = ParallaxConfig()
 
 
 class LogicalFrameConfig(_Model):
     """Mapping between the physical frame (m) and the GAMA (logical) frame."""
 
-    width: float = Field(100.0, description="Largeur du monde GAMA")
-    height: float = Field(62.5, description="Hauteur du monde GAMA")
+    width: float = Field(100.0, description="GAMA world width")
+    height: float = Field(62.5, description="GAMA world height")
     origin: Literal["top_left", "bottom_left"] = Field(
-        "top_left", description="GAMA: origine en haut à gauche, y vers le bas"
+        "top_left", description="GAMA: origin at the top left, y pointing down"
     )
     heading_unit: Literal["deg", "rad"] = "deg"
     physical_bounds: Optional[List[float]] = Field(
         None,
-        description="[xmin, ymin, xmax, ymax] physiques correspondant au monde GAMA (défaut: boîte englobante des tags)",
+        description="Physical [xmin, ymin, xmax, ymax] matching the GAMA world (default: bounding box of the tags)",
     )
-    requests_in_logical: bool = Field(True, description="Les requêtes GAMA (vitesse/heading) sont en unités logiques")
+    requests_in_logical: bool = Field(True, description="GAMA requests (speed/heading) are in logical units")
 
 
 # --------------------------------------------------------------------------- robots
 class CalibrationData(_Model):
     """Per-robot model turning physical body commands into raw actuator commands."""
 
-    heading_offset: float = Field(0.0, description="Angle (rad) ajouté au cap du tag pour obtenir le cap du robot")
-    tag_offset_x: float = Field(0.0, description="Position du centre robot dans le repère du tag (m, vers l'avant)")
-    tag_offset_y: float = Field(0.0, description="Position du centre robot dans le repère du tag (m, vers la gauche)")
-    tag_height: float = Field(0.0, description="Hauteur du tag au-dessus du sol (m), pour la correction de parallaxe")
+    heading_offset: float = Field(0.0, description="Angle (rad) added to the tag heading to get the robot heading")
+    tag_offset_x: float = Field(0.0, description="Robot centre position in the tag frame (m, forward)")
+    tag_offset_y: float = Field(0.0, description="Robot centre position in the tag frame (m, to the left)")
+    tag_height: float = Field(0.0, description="Tag height above the floor (m), for parallax correction")
     # twist output
-    linear_gain: float = Field(1.0, description="Commande brute par m/s")
-    linear_deadband: float = Field(0.0, description="Commande brute minimale pour bouger")
-    angular_gain: float = Field(1.0, description="Commande brute par rad/s")
+    linear_gain: float = Field(1.0, description="Raw command per m/s")
+    linear_deadband: float = Field(0.0, description="Minimal raw command to move")
+    angular_gain: float = Field(1.0, description="Raw command per rad/s")
     angular_deadband: float = 0.0
     # wheels output
-    wheel_gain: float = Field(1.0, description="Commande roue brute par m/s")
+    wheel_gain: float = Field(1.0, description="Raw wheel command per m/s")
     wheel_deadband: float = 0.0
-    wheel_base: float = Field(0.1, description="Entraxe effectif (m)")
-    right_wheel_scale: float = Field(1.0, description="Facteur appliqué à la roue droite (déséquilibre)")
+    wheel_base: float = Field(0.1, description="Effective wheel base (m)")
+    right_wheel_scale: float = Field(1.0, description="Factor applied to the right wheel (imbalance)")
     # common
-    drift_per_meter: float = Field(0.0, description="Dérive angulaire (rad/m) en ligne droite, compensée")
-    max_linear: float = Field(0.5, description="Vitesse linéaire physique max (m/s)")
-    max_angular: float = Field(3.0, description="Vitesse angulaire physique max (rad/s)")
-    max_raw: float = Field(1.0, description="Saturation des commandes brutes")
+    drift_per_meter: float = Field(0.0, description="Angular drift (rad/m) in a straight line, compensated")
+    max_linear: float = Field(0.5, description="Max physical linear speed (m/s)")
+    max_angular: float = Field(3.0, description="Max physical angular speed (rad/s)")
+    max_raw: float = Field(1.0, description="Saturation of raw commands")
     invert_linear: bool = False
     invert_angular: bool = False
     calibrated_at: Optional[str] = None
@@ -148,14 +176,14 @@ class CalibrationData(_Model):
 
 class OutputConfig(_Model):
     type: Literal["twist", "wheels", "json"] = Field(
-        "twist", description="twist: geometry_msgs/Twist ; wheels: Float64MultiArray [gauche, droite] ; json: std_msgs/String"
+        "twist", description="twist: geometry_msgs/Twist; wheels: Float64MultiArray [left, right]; json: std_msgs/String"
     )
-    topic: str = Field("/{name}/cmd_vel", description="Topic de sortie ({name} = nom du robot)")
+    topic: str = Field("/{name}/cmd_vel", description="Output topic ({name} = robot name)")
 
 
 class RobotConfig(_Model):
     name: str
-    tag_id: int = Field(..., description="Id du tag porté par le robot (négatif = pas encore associé)")
+    tag_id: int = Field(..., description="Id of the tag carried by the robot (negative = not assigned yet)")
     enabled: bool = True
     controller: str = "heading_pid"
     controller_params: Dict[str, Any] = Field(default_factory=dict)
@@ -168,44 +196,44 @@ class RobotConfig(_Model):
         import re
 
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", v):
-            raise ValueError("le nom doit être un identifiant ROS valide (lettres, chiffres, _)")
+            raise ValueError("the name must be a valid ROS identifier (letters, digits, _)")
         return v
 
 
 # --------------------------------------------------------------------------- infra
 class RosConfig(_Model):
     bus: Literal["auto", "ros2", "loopback"] = Field(
-        "auto", description="auto: ROS 2 si rclpy est disponible, sinon loopback (sans ROS)"
+        "auto", description="auto: ROS 2 when rclpy is available, otherwise loopback (no ROS)"
     )
-    domain_id: Optional[int] = Field(None, description="ROS_DOMAIN_ID (vide = variable d'environnement)")
+    domain_id: Optional[int] = Field(None, description="ROS_DOMAIN_ID (empty = environment variable)")
     node_name: str = "tango_middleware"
     namespace: str = "/tango"
     frame_id: str = "tango_world"
-    publish_rate: float = Field(10.0, gt=0, description="Fréquence de publication de l'état du monde (Hz)")
-    control_rate: float = Field(20.0, gt=0, description="Fréquence de la boucle de contrôle (Hz)")
+    publish_rate: float = Field(10.0, gt=0, description="World state publication rate (Hz)")
+    control_rate: float = Field(20.0, gt=0, description="Control loop rate (Hz)")
     qos_depth: int = 10
     publish_per_robot_topics: bool = True
 
 
 class SafetyConfig(_Model):
-    request_timeout: float = Field(1.0, description="Arrêt si aucune requête GAMA depuis (s), 0 = jamais")
-    tag_lost_timeout: float = Field(0.5, description="Arrêt si le tag du robot est perdu depuis (s)")
+    request_timeout: float = Field(1.0, description="Stop when no GAMA request for (s), 0 = never")
+    tag_lost_timeout: float = Field(0.5, description="Stop when the robot tag has been lost for (s)")
     stop_out_of_bounds: bool = True
-    bounds_margin: float = Field(0.0, description="Marge (m) autour de la zone (négatif = à l'intérieur)")
+    bounds_margin: float = Field(0.0, description="Margin (m) around the area (negative = inside)")
 
 
 class WebConfig(_Model):
     enabled: bool = True
-    host: str = Field("127.0.0.1", description="0.0.0.0 pour un accès depuis le réseau")
+    host: str = Field("127.0.0.1", description="0.0.0.0 for access from the network")
     port: int = 8080
     preview_fps: float = 10.0
     jpeg_quality: int = 75
-    allow_code_edit: bool = Field(True, description="Autoriser l'édition des contrôleurs depuis l'interface")
+    allow_code_edit: bool = Field(True, description="Allow editing controllers from the interface")
 
 
 class PluginsConfig(_Model):
-    dirs: List[str] = Field(default_factory=lambda: ["controllers"], description="Dossiers de contrôleurs utilisateur")
-    auto_reload: bool = Field(True, description="Recharger automatiquement les fichiers modifiés")
+    dirs: List[str] = Field(default_factory=lambda: ["controllers"], description="User controller directories")
+    auto_reload: bool = Field(True, description="Reload modified files automatically")
 
 
 class AppConfig(_Model):
@@ -230,9 +258,9 @@ class AppConfig(_Model):
         names = [r.name for r in robots]
         tags = [r.tag_id for r in robots]
         if len(set(names)) != len(names):
-            raise ValueError("noms de robots dupliqués")
+            raise ValueError("duplicate robot names")
         if len(set(tags)) != len(tags):
-            raise ValueError("tag_id de robots dupliqués")
+            raise ValueError("duplicate robot tag_id")
         return robots
 
     def robot(self, name: str) -> Optional[RobotConfig]:

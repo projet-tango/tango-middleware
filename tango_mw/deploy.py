@@ -79,7 +79,7 @@ def propose_world_corners(tags: List[Dict[str, Any]], width: float, height: floa
     if ids is None:
         cand = [t for t in cand if t["role"] != "robot"]
     if len(cand) < 4:
-        raise ValueError(f"au moins 4 tags (hors robots) doivent être visibles, {len(cand)} trouvé(s)")
+        raise ValueError(f"at least 4 non-robot tags must be visible, {len(cand)} found")
     pts = {t["id"]: (t["u"], t["v"]) for t in cand}
     pick = [
         min(pts, key=lambda i: pts[i][0] + pts[i][1]),   # image top-left
@@ -88,7 +88,7 @@ def propose_world_corners(tags: List[Dict[str, Any]], width: float, height: floa
         min(pts, key=lambda i: pts[i][0] - pts[i][1]),   # image bottom-left
     ]
     if len(set(pick)) != 4:
-        raise ValueError("impossible d'identifier 4 coins distincts (tags trop alignés ?)")
+        raise ValueError("cannot identify 4 distinct corners (tags too aligned?)")
     world = [(0.0, height), (width, height), (width, 0.0), (0.0, 0.0)]
     k = (int(rotation) // 90) % 4
     world = world[k:] + world[:k]
@@ -100,7 +100,7 @@ def propose_world_corners(tags: List[Dict[str, Any]], width: float, height: floa
 def measure_tags(scan: Dict[str, Any], ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:
     """World positions of scanned tags (needs a valid homography)."""
     if not scan.get("homography_valid"):
-        raise ValueError("homographie invalide : configurez d'abord au moins 4 tags de monde")
+        raise ValueError("invalid homography: configure at least 4 world tags first")
     out = []
     for t in scan["tags"]:
         if "world" not in t:
@@ -121,7 +121,7 @@ def discover_robots(network: Dict[str, Any], template: str, cfg: AppConfig) -> D
     if not network.get("available"):
         return {"available": False, "reason": network.get("reason") or "ROS 2 indisponible", "robots": []}
     if "{name}" not in template:
-        raise ValueError("le modèle de topic doit contenir {name}")
+        raise ValueError("the topic template must contain {name}")
     pre, post = template.split("{name}", 1)
     rx = re.compile("^" + re.escape(pre) + r"([A-Za-z][A-Za-z0-9_]*)" + re.escape(post) + "$")
     known = {r.name for r in cfg.robots}
@@ -197,23 +197,23 @@ class IdentifyJob:
         u = float(self.opt["raw"])
         kind = "turn" if self.opt["motion"] == "turn" else "forward"
         if t < p:
-            self.phase = "référence"
+            self.phase = "reference"
             self._record(self._before, snap)
             return self._stop(self.output_type)
         if t < p + d:
-            self.phase = "mouvement"
+            self.phase = "motion"
             return self._prim(self.output_type, kind, u)
         if t < 2 * p + d:
-            self.phase = "mesure"
+            self.phase = "measure"
             if t > p + d + p / 2:
                 self._record(self._after, snap)
             return self._stop(self.output_type)
         if t < 2 * p + 2 * d:
-            if self.phase != "retour":
+            if self.phase != "return":
                 self._decide()
-            self.phase = "retour"
+            self.phase = "return"
             return self._prim(self.output_type, kind, -u)
-        if self.status == "running" and self.phase == "retour":
+        if self.status == "running" and self.phase == "return":
             self.status = "done" if "tag_id" in self.result else "failed"
             self.phase = "done"
         return self._stop(self.output_type)
@@ -237,26 +237,26 @@ class IdentifyJob:
         scores.sort(reverse=True)
         self.result["scores"] = {str(t): round(s, 2) for s, t in scores[:6]}
         unit = "°" if self.opt["motion"] == "turn" else " px"
-        self.log.append("mouvements mesurés: " + (", ".join(f"#{t}: {s:.1f}{unit}" for s, t in scores[:6]) or "aucun tag"))
+        self.log.append("measured motions: " + (", ".join(f"#{t}: {s:.1f}{unit}" for s, t in scores[:6]) or "no tag"))
         if not scores or scores[0][0] < thr:
-            self.error = "aucun tag n'a bougé : robot éteint, mauvais topic, ou commande trop faible (option raw)"
-            self.log.append("échec: " + self.error)
+            self.error = "no tag moved: robot off, wrong topic, or command too weak (raw option)"
+            self.log.append("failed: " + self.error)
             return
         if len(scores) > 1 and scores[1][0] > max(thr, scores[0][0] / 3):
-            self.error = f"ambigu : #{scores[0][1]} et #{scores[1][1]} ont tous deux bougé"
-            self.log.append("échec: " + self.error)
+            self.error = f"ambiguous: #{scores[0][1]} and #{scores[1][1]} both moved"
+            self.log.append("failed: " + self.error)
             return
         self.result["tag_id"] = scores[0][1]
-        self.log.append(f"tag identifié: #{scores[0][1]}")
+        self.log.append(f"tag identified: #{scores[0][1]}")
 
     def cancel(self) -> None:
         if self.status == "running":
             self.status = "cancelled"
-            self.log.append("annulé")
+            self.log.append("cancelled")
 
     def fail(self, msg: str) -> None:
         self.status, self.error = "failed", msg
-        self.log.append("échec: " + msg)
+        self.log.append("failed: " + msg)
 
     def describe(self) -> Dict[str, Any]:
         return {"robot": self.robot, "procedure": "identify", "status": self.status, "phase": self.phase,

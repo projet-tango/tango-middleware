@@ -18,10 +18,10 @@ def make_bus(cfg: AppConfig) -> Bus:
             return Ros2Bus(cfg)
         if kind == "ros2":
             raise RuntimeError(
-                "rclpy introuvable : sourcez votre installation ROS 2 (ex: `source /opt/ros/jazzy/setup.bash` "
-                "ou `call C:\\dev\\ros2\\local_setup.bat`) avant de lancer le middleware"
+                "rclpy not found: source your ROS 2 installation (e.g. `source /opt/ros/jazzy/setup.bash` "
+                "or `call C:\\dev\\ros2\\local_setup.bat`) before starting the middleware"
             )
-        log.warning("rclpy indisponible : utilisation du bus loopback (aucune communication ROS)")
+        log.warning("rclpy unavailable: using the loopback bus (no ROS communication)")
     return LoopbackBus(cfg)
 
 

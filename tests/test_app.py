@@ -35,7 +35,7 @@ def test_world_published_and_request_drives_robot(app):
     for _ in range(15):
         app.bus.inject_request(json.dumps({"robot": "robot1", "speed": 15, "heading": 0}))
         time.sleep(0.1)
-    assert app.manager.robots["robot1"].status == "actif"
+    assert app.manager.robots["robot1"].status == "active"
     assert app.bus.commands["robot1"]["angular"] != 0 or app.bus.commands["robot1"]["linear"] > 0
     assert app.snapshot.robots["robot1"].x > x0 + 0.02
 
@@ -47,7 +47,7 @@ def test_estop_and_timeout(app):
     assert app.bus.commands["robot2"]["linear"] == 0.0
     app.manager.set_estop(False)
     time.sleep(app.cfg.safety.request_timeout + 0.3)
-    assert app.manager.robots["robot2"].status == "requête expirée"
+    assert app.manager.robots["robot2"].status == "request expired"
 
 
 def test_web_api(app):

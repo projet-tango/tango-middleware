@@ -26,10 +26,10 @@ from ..vision.tracker import RobotObservation
 from .robot_model import raw_primitive, raw_stop
 
 PROCEDURES = {
-    "heading_offset": "Décalage angulaire du tag (avance/recule)",
-    "linear": "Gain + zone morte en vitesse linéaire, dérive en ligne droite",
-    "angular": "Gain + zone morte en rotation (ou entraxe pour 'wheels')",
-    "full": "Les trois, dans l'ordre",
+    "heading_offset": "Angular offset of the tag (forward/backward)",
+    "linear": "Gain + dead zone in linear speed, straight-line drift",
+    "angular": "Gain + dead zone in rotation (or wheel base for 'wheels')",
+    "full": "All three, in order",
 }
 
 DEFAULT_OPTIONS: Dict[str, Any] = {
@@ -65,7 +65,7 @@ class CalibrationJob:
 
     def __init__(self, robot: RobotConfig, procedure: str, options: Optional[Dict[str, Any]] = None):
         if procedure not in PROCEDURES:
-            raise ValueError(f"procédure inconnue: {procedure}")
+            raise ValueError(f"unknown procedure: {procedure}")
         self.robot = robot.name
         self.output_type = robot.output.type
         self.cal = robot.calibration.model_copy()
@@ -92,7 +92,7 @@ class CalibrationJob:
         elif self._last_seen is None:
             self._last_seen = now
         if now - self._last_seen > self.opt["lost_timeout"]:
-            self.fail("tag du robot perdu pendant la calibration")
+            self.fail("robot tag lost during calibration")
             return raw_stop(self.output_type)
         try:
             return next(self._gen)
@@ -100,22 +100,22 @@ class CalibrationJob:
             self.status = "done"
             self.phase = "done"
             self.result["calibrated_at"] = _dt.datetime.now().isoformat(timespec="seconds")
-            self._say("terminé: " + ", ".join(f"{k}={v:.4g}" for k, v in self.result.items() if isinstance(v, float)))
+            self._say("done: " + ", ".join(f"{k}={v:.4g}" for k, v in self.result.items() if isinstance(v, float)))
         except CalibrationError as exc:
             self.fail(str(exc))
         except Exception as exc:  # pragma: no cover
-            self.fail(f"erreur interne: {exc!r}")
+            self.fail(f"internal error: {exc!r}")
         return raw_stop(self.output_type)
 
     def cancel(self) -> None:
         if self.status == "running":
             self.status = "cancelled"
-            self._say("annulé")
+            self._say("cancelled")
 
     def fail(self, msg: str) -> None:
         self.status = "failed"
         self.error = msg
-        self._say("échec: " + msg)
+        self._say("failed: " + msg)
 
     def describe(self) -> dict:
         return {
@@ -149,7 +149,7 @@ class CalibrationJob:
     def _trim(self, rec: List[Sample]) -> List[Sample]:
         out = [s for s in rec if s[0] >= self.opt["settle"]]
         if len(out) < 4:
-            raise CalibrationError("pas assez de mesures (robot invisible ou durée trop courte)")
+            raise CalibrationError("not enough measurements (robot not visible or duration too short)")
         return out
 
     @staticmethod
@@ -184,7 +184,7 @@ class CalibrationJob:
             rec = self._trim(rec)
             dx, dy = rec[-1][1] - rec[0][1], rec[-1][2] - rec[0][2]
             if math.hypot(dx, dy) < 0.03:
-                raise CalibrationError(f"le robot n'a pas bougé (commande {sign * u:+.3g}), augmentez forward_raw")
+                raise CalibrationError(f"the robot did not move (command {sign * u:+.3g}), increase forward_raw")
             motion = math.atan2(dy, dx) if sign > 0 else math.atan2(-dy, -dx)
             estimates.append(wrap_angle(motion - _circular_mean([s[3] for s in rec])))
         off = _circular_mean(estimates)
@@ -210,12 +210,12 @@ class CalibrationJob:
                     speeds.append(abs(v))
                     drifts.append(w / v)
                     if v * sign < 0:
-                        self._say("attention: le robot recule pour une commande positive (invert_linear ?)")
+                        self._say("warning: the robot moves backward for a positive command (invert_linear?)")
         if not us:
-            raise CalibrationError("aucun mouvement détecté, augmentez linear_levels")
+            raise CalibrationError("no motion detected, increase linear_levels")
         k, b = _fit_line(us, speeds)
         if k <= 1e-6:
-            raise CalibrationError("ajustement invalide (gain nul ou négatif)")
+            raise CalibrationError("invalid fit (zero or negative gain)")
         dead = max(0.0, -b / k)
         drift = float(np.median(drifts))
         if self.output_type == "wheels":
@@ -243,12 +243,12 @@ class CalibrationJob:
                     us.append(abs(u))
                     rates.append(abs(w))
                     if w * sign < 0:
-                        self._say("attention: rotation inversée (invert_angular ?)")
+                        self._say("warning: rotation reversed (invert_angular?)")
         if not us:
-            raise CalibrationError("aucune rotation détectée, augmentez angular_levels")
+            raise CalibrationError("no rotation detected, increase angular_levels")
         k, b = _fit_line(us, rates)
         if k <= 1e-6:
-            raise CalibrationError("ajustement invalide (gain nul ou négatif)")
+            raise CalibrationError("invalid fit (zero or negative gain)")
         dead = max(0.0, -b / k)
         if self.output_type == "wheels":
             k_lin = getattr(self, "_k_lin", 1.0 / max(self.cal.wheel_gain, 1e-9))

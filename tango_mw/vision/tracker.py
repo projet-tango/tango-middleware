@@ -7,6 +7,7 @@ midpoint through ``H``.
 """
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ import numpy as np
 from ..config import CameraConfig, RobotConfig, WorldConfig
 from ..frames import apply_h, convex_hull, wrap_angle
 from .detector import TagDetection
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,6 +61,7 @@ class WorldSnapshot:
     reprojection_error: Optional[float] = None
     homography_stamp: float = 0.0
     homography_locked: bool = False
+    camera_moved_at: float = 0.0  # last time a locked homography no longer matched the tags
     world_tags_visible: List[int] = field(default_factory=list)
     bounds: List[Tuple[float, float]] = field(default_factory=list)
     robots: Dict[str, RobotObservation] = field(default_factory=dict)
@@ -80,6 +84,8 @@ class Tracker:
         self._H_err: Optional[float] = None
         self._H_stamp = 0.0
         self._locked = False
+        self._mismatch = 0  # consecutive frames where the locked H disagrees with the tags
+        self._moved_at = 0.0
         self._robots: Dict[str, RobotObservation] = {}
         self._robot_cfg: Dict[int, RobotConfig] = {}
         self.set_robots(robots)
@@ -177,6 +183,7 @@ class Tracker:
                         self._locked = True
             else:
                 seen = [t.id for t in self.world.tags if t.id in by_id]
+                self._check_locked(by_id, seen, stamp)
 
             # --- robots
             H = self._H
@@ -207,6 +214,7 @@ class Tracker:
                 reprojection_error=self._H_err,
                 homography_stamp=self._H_stamp,
                 homography_locked=self._locked,
+                camera_moved_at=self._moved_at,
                 world_tags_visible=seen,
                 bounds=list(self.bounds),
                 robots={n: o.copy() for n, o in self._robots.items()},
@@ -215,6 +223,21 @@ class Tracker:
                 fps=fps,
                 image_size=image_size,
             )
+
+    def _check_locked(self, by_id: Dict[int, TagDetection], seen: List[int], stamp: float) -> None:
+        """Locked mode: if the boundary tags no longer land where the locked H says, the camera
+        (or the tags) moved: unlock so that H is recomputed on the next frame."""
+        if not self.world.relock_on_move or len(seen) < self.world.min_tags:
+            return  # tags hidden (e.g. a robot over a corner): nothing reliable to compare
+        pos = {t.id: (t.x, t.y) for t in self.world.tags}
+        img = self._undistort(np.array([by_id[i].center for i in seen], dtype=np.float64))
+        err = float(np.mean(np.linalg.norm(apply_h(self._H, img) - np.array([pos[i] for i in seen]), axis=1)))
+        self._mismatch = self._mismatch + 1 if err > self.world.max_reprojection_error else 0
+        if self._mismatch >= 5:  # a few frames, so that one bad detection does not unlock
+            log.warning("Camera moved (boundary tags off by %.0f mm): recomputing the locked homography", err * 1000)
+            self._locked = False
+            self._mismatch = 0
+            self._moved_at = stamp
 
     def _update_obs(self, obs: RobotObservation, x, y, theta, tx, ty, tag_theta, stamp) -> None:
         dt = stamp - obs.last_seen

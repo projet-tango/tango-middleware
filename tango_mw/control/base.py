@@ -54,7 +54,7 @@ class Param:
         elif isinstance(d, float):
             value = float(value)
         if self.choices is not None and value not in self.choices:
-            raise ValueError(f"valeur {value!r} hors de {self.choices}")
+            raise ValueError(f"value {value!r} not in {self.choices}")
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             if self.min is not None:
                 value = max(self.min, value)

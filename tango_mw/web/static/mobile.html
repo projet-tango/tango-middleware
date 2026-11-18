@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Tango camera</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #eee; font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #panel { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+           background: rgba(0,0,0,.65); display: flex; flex-direction: column; gap: 8px; }
+  #state { font-weight: 600; } #state.ok { color: #3ccb7f; } #state.bad { color: #f06464; } #state.warn { color: #e6a23c; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, input { font: inherit; border-radius: 8px; border: 1px solid #5b8ff9; padding: 10px 14px; }
+  button { background: #5b8ff9; color: #fff; } button.ghost { background: transparent; color: #9db8ff; }
+  input { background: #111; color: #eee; width: 9em; letter-spacing: .2em; text-align: center; }
+  #dim { position: fixed; inset: 0; background: #000; display: none; align-items: flex-end; justify-content: center; padding-bottom: 30px; color: #444; font-size: 13px; }
+  #dim.on { display: flex; }
+  .small { font-size: 12px; color: #aaa; }
+</style>
+</head>
+<body>
+<video id="video" playsinline muted autoplay></video>
+<div id="panel">
+  <div id="state">Ready</div>
+  <div class="small" id="detail"></div>
+  <div class="row" id="pairrow">
+    <label>Pairing code <input id="code" inputmode="numeric" maxlength="12" autocomplete="off"></label>
+  </div>
+  <div class="row">
+    <button id="start">Start camera</button>
+    <button id="dimbtn" class="ghost">Black screen</button>
+  </div>
+  <div class="small">Keep this page open and the phone plugged in; the connection comes back on its own.
+    A browser stops the camera when the screen locks: use "Black screen" instead of locking (the Android app streams with the screen locked).
+    iPhone tip: "Share → Add to Home Screen", then Guided Access to keep the page in front.</div>
+</div>
+<div id="dim">tap to light up — the camera keeps running</div>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const video = $("#video"), canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+                set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+// pairing code: #c=123456 in the QR link, remembered afterwards
+const hashCode = new URLSearchParams(location.hash.slice(1)).get("c");
+if (hashCode) { store.set("tango_code", hashCode); history.replaceState(null, "", location.pathname + location.search); }
+$("#code").value = store.get("tango_code") || "";
+$("#code").addEventListener("change", () => { store.set("tango_code", $("#code").value.trim()); reconnectNow(); });
+let device = store.get("tango_device");
+if (!device) { device = "web-" + Math.random().toString(36).slice(2, 10); store.set("tango_device", device); }
+
+let settings = { width: 1280, height: 720, fps: 15, jpeg_quality: 80, lens: "back", torch: false };
+let stream = null, ws = null, running = false, backoff = 1000, timer = null, sent = 0, sentFps = 0, lastStat = 0, wakeLock = null, camKey = "";
+
+function setState(text, cls, detail) {
+  $("#state").textContent = text; $("#state").className = cls || "";
+  if (detail !== undefined) $("#detail").textContent = detail;
+}
+
+async function openCamera() {
+  const key = `${settings.lens}/${settings.width}x${settings.height}@${settings.fps}`;
+  if (stream && camKey === key && stream.getVideoTracks()[0]?.readyState === "live") return;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+    facingMode: settings.lens === "front" ? "user" : { ideal: "environment" },
+    width: { ideal: settings.width || 1280 }, height: { ideal: settings.height || 720 },
+    frameRate: { ideal: settings.fps || 15 } } });
+  camKey = key;
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  applyTrackSettings();
+}
+function applyTrackSettings() {
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track || !track.getCapabilities) return;
+  const caps = track.getCapabilities(), adv = {};
+  if ("torch" in caps) adv.torch = !!settings.torch;
+  if (caps.focusMode && settings.focus === "infinity" && caps.focusMode.includes("manual") && caps.focusDistance) {
+    adv.focusMode = "manual"; adv.focusDistance = caps.focusDistance.max;
+  } else if (caps.focusMode && caps.focusMode.includes("continuous")) adv.focusMode = "continuous";
+  if (caps.exposureCompensation && settings.exposure_compensation) {
+    adv.exposureCompensation = Math.max(caps.exposureCompensation.min, Math.min(caps.exposureCompensation.max, settings.exposure_compensation));
+  }
+  track.applyConstraints({ advanced: [adv] }).catch(() => {});
+}
+
+async function keepAwake() {
+  try { if ("wakeLock" in navigator && document.visibilityState === "visible" && !wakeLock) {
+    wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } } catch {}
+}
+
+function connect() {
+  clearTimeout(timer);
+  if (!running) return;
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  setState("Connecting to the middleware…", "warn");
+  const sock = new WebSocket(url); sock.binaryType = "arraybuffer"; ws = sock;
+  let welcomed = false;
+  sock.onopen = () => sock.send(JSON.stringify({ type: "hello", code: $("#code").value.trim(), device,
+    name: (navigator.userAgentData?.platform || (/iPhone|iPad/.test(navigator.userAgent) ? "iPhone" : "browser")) + " (web)",
+    platform: "web", app_version: "1" }));
+  sock.onmessage = async ev => {
+    if (typeof ev.data !== "string") return;
+    const m = JSON.parse(ev.data);
+    if (m.type === "welcome") { welcomed = true; backoff = 1000; setState("Connected to " + m.server, "ok", ""); $("#pairrow").style.display = "none"; }
+    else if (m.type === "settings") { settings = { ...settings, ...m }; try { await openCamera(); applyTrackSettings(); } catch (e) { setState("Camera unavailable", "bad", e.message); } }
+    else if (m.type === "error") {
+      if (m.reason === "bad_code") { $("#pairrow").style.display = ""; setState("Wrong pairing code", "bad", "Enter the code shown in the middleware interface (Camera tab)."); backoff = 5000; }
+      else if (m.reason === "busy") { setState("Another phone is already streaming", "warn", "Retrying automatically…"); backoff = 5000; }
+      else if (m.reason === "replaced") backoff = 500;
+    }
+  };
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    ws = null;
+    if (!running) return;
+    if (welcomed) setState("Connection lost — reconnecting…", "warn");
+    timer = setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 5000);
+  };
+  sock.onerror = () => {};
+}
+function reconnectNow() { if (ws) { try { ws.close(); } catch {} } else { backoff = 500; connect(); } }
+
+function loop() {
+  if (!running) return;
+  const period = 1000 / Math.max(1, settings.fps || 15);
+  const t0 = performance.now();
+  if (ws && ws.readyState === 1 && video.videoWidth && ws.bufferedAmount < 400000) {
+    if (canvas.width !== video.videoWidth) { canvas.width = video.videoWidth; canvas.height = video.videoHeight; }
+    ctx.drawImage(video, 0, 0);
+    canvas.toBlob(b => { if (b && ws && ws.readyState === 1) { ws.send(b); sent++; } }, "image/jpeg", (settings.jpeg_quality || 80) / 100);
+  }
+  const now = Date.now();
+  if (now - lastStat > 2000) {
+    sentFps = sent * 1000 / (now - lastStat || 1); sent = 0; lastStat = now; sendStats();
+    if (stream && stream.getVideoTracks()[0]?.readyState !== "live") openCamera().catch(() => {});
+  }
+  setTimeout(loop, Math.max(5, period - (performance.now() - t0)));
+}
+async function sendStats() {
+  if (!ws || ws.readyState !== 1) return;
+  const st = { type: "stats", fps: Math.round(sentFps * 10) / 10, width: video.videoWidth, height: video.videoHeight };
+  try { if (navigator.getBattery) { const b = await navigator.getBattery(); st.battery = Math.round(b.level * 100); st.charging = b.charging; } } catch {}
+  ws.send(JSON.stringify(st));
+  if (ws && $("#state").className === "ok") $("#detail").textContent = `${video.videoWidth}×${video.videoHeight} — ${st.fps} fps`;
+}
+
+async function start() {
+  if (running) return;
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    setState("Insecure page: the camera is blocked", "bad", "Open the https:// address shown in the middleware interface (Camera tab) and accept the certificate.");
+    return;
+  }
+  try { await openCamera(); } catch (e) { setState("Camera access denied", "bad", e.message); return; }
+  running = true; store.set("tango_autostart", "1");
+  $("#start").textContent = "Camera on"; $("#start").disabled = true;
+  keepAwake(); connect(); loop();
+}
+$("#start").addEventListener("click", start);
+$("#dimbtn").addEventListener("click", () => $("#dim").classList.add("on"));
+$("#dim").addEventListener("click", () => $("#dim").classList.remove("on"));
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && running) { keepAwake(); openCamera().catch(() => {}); if (!ws) connect(); }
+});
+// Started before on this phone: try to restart on its own (works when the camera permission is remembered).
+if (store.get("tango_autostart") === "1") start();
+</script>
+</body>
+</html>

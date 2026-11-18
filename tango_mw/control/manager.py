@@ -65,7 +65,7 @@ class ControlManager:
                         try:
                             rt.controller.configure(r.controller_params)
                         except Exception as exc:
-                            rt.controller_error = f"paramètres invalides: {exc}"
+                            rt.controller_error = f"invalid parameters: {exc}"
                     rt.cfg = r
                     rt.model = RobotModel(r.calibration, r.output.type)
                     if rt.controller is not None:
@@ -87,7 +87,7 @@ class ControlManager:
         except Exception as exc:
             rt.controller = None
             rt.controller_error = f"{exc}"
-            log.error("Robot %s: contrôleur '%s' indisponible: %s", rt.cfg.name, rt.cfg.controller, exc)
+            log.error("Robot %s: controller '%s' unavailable: %s", rt.cfg.name, rt.cfg.controller, exc)
 
     # ------------------------------------------------------------------ inputs
     def set_request(self, robot: str, req: Request, source: str = "") -> bool:
@@ -102,7 +102,7 @@ class ControlManager:
     def set_estop(self, on: bool) -> None:
         with self._lock:
             if on and not self.estop:
-                log.warning("ARRÊT D'URGENCE activé")
+                log.warning("EMERGENCY STOP engaged")
                 for rt in self.robots.values():
                     if rt.job:
                         rt.job.cancel()
@@ -114,9 +114,9 @@ class ControlManager:
             if rt is None:
                 raise KeyError(robot)
             if self.estop:
-                raise RuntimeError("arrêt d'urgence actif")
+                raise RuntimeError("emergency stop engaged")
             if rt.job and rt.job.status == "running":
-                raise RuntimeError("une calibration est déjà en cours")
+                raise RuntimeError("a calibration is already running")
             rt.job = CalibrationJob(rt.cfg, procedure, options)
             return rt.job
 
@@ -128,10 +128,10 @@ class ControlManager:
             if rt is None:
                 raise KeyError(robot)
             if self.estop:
-                raise RuntimeError("arrêt d'urgence actif")
+                raise RuntimeError("emergency stop engaged")
             busy = [n for n, r in self.robots.items() if r.job and r.job.status == "running"]
             if busy:
-                raise RuntimeError(f"une procédure est déjà en cours ({', '.join(busy)})")
+                raise RuntimeError(f"a procedure is already running ({', '.join(busy)})")
             rt.job = IdentifyJob(rt.cfg, [t.id for t in self.cfg.world.tags], options)
             return rt.job
 
@@ -154,7 +154,7 @@ class ControlManager:
                     if rt.active:
                         self.emit(rt.cfg, raw_stop(rt.cfg.output.type))
                         rt.active = False
-                    rt.status = "désactivé"
+                    rt.status = "disabled"
                     continue
                 raw = self._step_robot(rt, now, snap)
                 rt.last_raw = raw
@@ -179,7 +179,7 @@ class ControlManager:
             if self.estop:
                 job.cancel()
             elif job.status == "running" and job.kind != "identify" and safety.stop_out_of_bounds and not inside:
-                job.fail("robot sorti de la zone")
+                job.fail("robot left the area")
             raw = job.step(now, obs, snap) if job.status == "running" else raw_stop(rt.cfg.output.type)
             if job.status != "running":
                 rt.last_job = job.describe()
@@ -191,28 +191,28 @@ class ControlManager:
             return raw
 
         if self.estop:
-            return self._stop(rt, "arrêt d'urgence")
+            return self._stop(rt, "emergency stop")
         req = rt.request
         if req is None:
-            return self._stop(rt, "en attente de requête")
+            return self._stop(rt, "waiting for a request")
         if safety.request_timeout > 0 and now - req.stamp > safety.request_timeout:
-            return self._stop(rt, "requête expirée")
+            return self._stop(rt, "request expired")
         if req.stop:
-            return self._stop(rt, "stop demandé")
+            return self._stop(rt, "stop requested")
         if not obs.visible and age > safety.tag_lost_timeout:
-            return self._stop(rt, "tag perdu")
+            return self._stop(rt, "tag lost")
         if snap.H is None:
-            return self._stop(rt, "homographie indisponible")
+            return self._stop(rt, "no homography")
         if safety.stop_out_of_bounds and not inside:
             # only allow requests heading back towards the inside of the arena
             cx = sum(p[0] for p in snap.bounds) / len(snap.bounds)
             cy = sum(p[1] for p in snap.bounds) / len(snap.bounds)
             if math.cos(req.heading) * (cx - obs.x) + math.sin(req.heading) * (cy - obs.y) <= 0 or req.speed < 0:
-                return self._stop(rt, "hors zone")
+                return self._stop(rt, "out of bounds")
 
         self._ensure_controller(rt)
         if rt.controller is None:
-            return self._stop(rt, "contrôleur en erreur")
+            return self._stop(rt, "controller error")
         if not rt.active:
             rt.controller.reset()
             rt.last_compute = now
@@ -224,11 +224,11 @@ class ControlManager:
             body = rt.controller.compute(state, req, dt)
         except Exception:
             rt.controller_error = traceback.format_exc(limit=4)
-            log.error("Contrôleur %s (%s) a levé une exception:\n%s", rt.cfg.controller, rt.cfg.name, rt.controller_error)
+            log.error("Controller %s (%s) raised an exception:\n%s", rt.cfg.controller, rt.cfg.name, rt.controller_error)
             rt.controller = None
-            return self._stop(rt, "contrôleur en erreur")
+            return self._stop(rt, "controller error")
         rt.active = True
-        rt.status = "actif"
+        rt.status = "active"
         return rt.model.to_raw(body)
 
     # ------------------------------------------------------------------ status
