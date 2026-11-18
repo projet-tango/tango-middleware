@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tango-mw"
+version = "0.1.0"
+description = "Middleware GAMA <-> robots physiques : tracking AprilTag/homographie et contrôle via ROS 2"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "opencv-python>=4.8",
+    "pydantic>=2.5",
+    "PyYAML>=6.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+pupil = ["pupil-apriltags>=1.0"]
+dev = ["pytest>=7", "httpx>=0.27"]
+
+[project.scripts]
+tango-mw = "tango_mw.__main__:main"
+
+# Third-party packages can expose controllers through this entry-point group:
+# [project.entry-points."tango_mw.controllers"]
+# my_ctrl = "my_package.my_module:MyController"
+
+[tool.setuptools.packages.find]
+include = ["tango_mw*"]
+
+[tool.setuptools.package-data]
+tango_mw = ["web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

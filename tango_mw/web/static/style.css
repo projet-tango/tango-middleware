@@ -1,0 +1,70 @@
+:root {
+  --bg: #f4f5f7; --card: #ffffff; --fg: #1d2330; --muted: #6b7385; --border: #dde1e8;
+  --accent: #2f6fed; --ok: #17924b; --warn: #c27c0e; --bad: #d23a3a; --input: #ffffff; --code: #f6f7f9;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171d; --card: #1c2028; --fg: #e5e8ee; --muted: #8d95a6; --border: #2c323d;
+          --accent: #5b8ff9; --ok: #3ccb7f; --warn: #e6a23c; --bad: #f06464; --input: #232833; --code: #161a21; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: var(--card); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 18px; } .brand span { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 6px; }
+.badges { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; }
+.badge { padding: 2px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); white-space: nowrap; }
+.badge.ok { color: var(--ok); border-color: var(--ok); } .badge.bad { color: var(--bad); border-color: var(--bad); } .badge.warn { color: var(--warn); border-color: var(--warn); }
+nav { display: flex; gap: 2px; padding: 0 16px; background: var(--card); border-bottom: 1px solid var(--border); overflow-x: auto; }
+nav button { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); padding: 10px 12px; }
+nav button.active { color: var(--fg); border-bottom-color: var(--accent); }
+main { padding: 16px; max-width: 1500px; margin: 0 auto; }
+.tab { display: none; } .tab.active { display: block; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 16px; min-width: 0; }
+.card h3 { margin: 4px 0 10px; font-size: 15px; } .card h3 + h3 { margin-top: 18px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.video img, img.preview { width: 100%; background: #000; border-radius: 4px; min-height: 120px; display: block; }
+.muted { color: var(--muted); } .small { font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+button, .button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+button.ghost, .button.ghost { background: transparent; color: var(--accent); }
+button.primary { background: var(--ok); border-color: var(--ok); }
+button.danger { background: var(--bad); border-color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+.estop { background: var(--bad); border-color: var(--bad); font-weight: 700; }
+.estop.on { animation: blink 1s infinite; } @keyframes blink { 50% { opacity: .55; } }
+input, select, textarea { font: inherit; background: var(--input); color: var(--fg); border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; max-width: 100%; }
+input[type=number] { width: 110px; } input[type=checkbox] { width: auto; }
+input.invalid, textarea.invalid { border-color: var(--bad); }
+.field { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 8px; align-items: center; padding: 3px 0; }
+.field > label { font-size: 13px; } .field > label small { display: block; color: var(--muted); font-size: 11px; line-height: 1.25; }
+@media (max-width: 600px) { .field { grid-template-columns: minmax(0, 1fr); } }
+fieldset { border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; padding: 6px 10px; min-width: 0; }
+legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
+details > summary { cursor: pointer; font-weight: 600; margin: 6px 0; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+table.edit td { padding: 2px 4px; } table.edit input[type=number] { width: 90px; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; font-size: 13px; }
+.kv > :nth-child(odd) { color: var(--muted); }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+.savebar { position: sticky; top: 0; z-index: 5; display: flex; gap: 10px; align-items: center; justify-content: flex-end; padding: 8px 16px; background: #fff4d6; color: #5a4300; border-bottom: 1px solid #e6cf8a; }
+.savebar.info { background: #e3edff; color: #1d3a7a; border-color: #b6cbf5; }
+.savebar span { flex: 1; } .hidden { display: none; }
+textarea.code { width: 100%; min-height: 420px; font: 12.5px/1.45 ui-monospace, Consolas, monospace; background: var(--code); tab-size: 4; white-space: pre; }
+textarea.json { width: 100%; min-height: 60px; font: 12px ui-monospace, Consolas, monospace; }
+.robotcard { border-left: 4px solid var(--accent); }
+.robotcard .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.robotcard .head h3 { margin: 0; flex: 1; }
+.cols3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 1100px) { .cols3 { grid-template-columns: minmax(0, 1fr); } }
+.logs { font: 12px ui-monospace, Consolas, monospace; max-height: 360px; overflow: auto; white-space: pre-wrap; }
+.logs .WARNING { color: var(--warn); } .logs .ERROR { color: var(--bad); }
+.list { margin: 0; padding-left: 18px; font: 12.5px ui-monospace, Consolas, monospace; max-height: 420px; overflow: auto; }
+pre.err { white-space: pre-wrap; color: var(--bad); font-size: 12px; background: var(--code); padding: 6px; border-radius: 4px; overflow-x: auto; }
+code { font-family: ui-monospace, Consolas, monospace; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 5px; }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+button.danger.ghost { background: transparent; color: var(--bad); }
+.field > input[type=checkbox] { justify-self: start; }
