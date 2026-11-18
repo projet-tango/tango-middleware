@@ -282,14 +282,20 @@ def create_web_app(app: App) -> FastAPI:
 
     @api.post("/api/setup/propose_world")
     def setup_propose_world(data: Dict[str, Any] = Body(...)):
+        """Corner tags -> world corners. Width/height (m, centre to centre) are optional: when left
+        out they are estimated from the printed tag size (world.tag_size), no measuring needed."""
         scan = deploy.scan_tags(app, float(data.get("duration", 1.0)))
+        rot, mirror, ids = int(data.get("rotation", 0)), bool(data.get("mirror", False)), data.get("ids")
+        estimated = None
         try:
-            tags = deploy.propose_world_corners(scan["tags"], float(data["width"]), float(data["height"]),
-                                                int(data.get("rotation", 0)), bool(data.get("mirror", False)),
-                                                data.get("ids"))
+            width, height = data.get("width"), data.get("height")
+            if not width or not height:
+                estimated = deploy.estimate_field(scan, app.cfg.world.tag_size, rot, mirror, ids)
+                width, height = width or estimated["width"], height or estimated["height"]
+            tags = deploy.propose_world_corners(scan["tags"], float(width), float(height), rot, mirror, ids)
         except (ValueError, KeyError) as exc:
             _bad(exc)
-        return {"tags": tags, "scan": scan}
+        return {"tags": tags, "scan": scan, "estimated": estimated}
 
     @api.post("/api/setup/measure_tags")
     def setup_measure(data: Dict[str, Any] = Body(default={})):

@@ -55,14 +55,20 @@ cardboard/foam board), and **Other ids** prints any tag (e.g. spares, or extra l
 
 ## Laying the boundary tags
 
-1. Stick tag **0** where you want the bottom-left corner, flat, with tape on its white margin only.
-2. With the tape measure, place tag **1** so that the distance **between the centres** of tags 0 and 1
-   is exactly **1.50 m**. Same for tag **3** from tag 0, and tag **2** from tags 1 and 3.
-3. Check the two diagonals: they must be equal (2.12 m). If not, the field is not square: move tag 2.
-4. The orientation of the boundary tags does not matter. Only their centres are used.
+**No tape measure needed.** Lay the 4 tags roughly at the corners of the area you want (tag 0 bottom
+left, 1 bottom right, 2 top right, 3 top left, seen from the side of tag 0), flat, with tape on their
+white margin only. Their orientation does not matter.
 
-An error of a few millimetres is fine: the dashboard shows the **reprojection error** (how well the 4
-tags agree with their configured positions); below 10 mm is good.
+The corner tags **define** the field: the GAMA world is the quadrilateral they form, wherever they are,
+and every position is computed relative to them. A field that is not quite square, or a tag a few
+centimetres off, only means the GAMA world is that slightly different shape: nothing to correct.
+
+The real size only sets the units (speeds in m/s, placement tolerances). The middleware estimates it from
+the **printed size of the tags** (*Scan & assign*, see [Configuration](configuration.md)): within about
+2 %, which is plenty. Type a measured size instead if you have one.
+
+The tags must just stay where they are once set up (tape them down): moving a corner tag moves the GAMA
+world with it.
 
 ## Tags on the robots
 
@@ -75,12 +81,15 @@ tags agree with their configured positions); below 10 mm is good.
 - In this scenario: **robot1 → tag 10**, **robot2 → tag 11**, **robot3 → tag 12**. If you mix them up,
   the middleware can find out which is which (see *Identify* in [Configuration](configuration.md)).
 
-> **Tall robots**: a tag 20 cm above the floor seen from 1.8 m appears shifted outwards by up to 10 % of
-> its distance to the point below the camera. If your robots are taller than a few centimetres, enable
-> *parallax correction* in the configuration (`world.parallax`: camera position and height) and set each
-> robot's `calibration.tag_height`.
+- **Measure the height of each tag above the floor** (ruler, in cm): you will type it in each robot's card
+  (*Tag height*). Seen at an angle, a raised tag appears away from its robot; the middleware corrects it
+  with this height and the camera position, which it works out by itself from the boundary tags.
 
 ## The phone above the field
+
+Two placements work: **above the field** (the most accurate and the easiest, described here) or
+**at head height on a tripod** in front of the field (see [the next section](#camera-at-head-height)).
+
 
 - Mount the phone **pointing straight down**, above the **centre** of the field, in **landscape**.
   Any stable holder works: a microphone stand with a boom, a camera tripod with a horizontal arm, a
@@ -93,6 +102,46 @@ tags agree with their configured positions); below 10 mm is good.
 - The phone sends images in its sensor orientation (landscape). If the field appears rotated or
   mirrored, use `camera.rotate` / `camera.flip` in the middleware (or the *Rotation*/*Mirror* options
   when scanning).
+
+## Camera at head height
+
+A tripod or a stand at head height in front of the field (1.5–1.7 m, the phone tilted down towards the
+field) also works: the floor tags define the mapping whatever the viewing angle, and the middleware
+estimates where the camera is from them. Measured with a simulated phone camera (1280×960, 70°) on the
+1.5 m field:
+
+| Camera | Robot tags on the floor | Tags 10 cm high, height **not** set | Tags 10 cm high, height set |
+|---|---|---|---|
+| Above the field, 1.8 m | 1 mm | 38 mm | 1 mm |
+| Head height 1.6 m, 0.8 m in front | 3 mm | 139 mm | 2 mm |
+| Tripod at a corner, 1.7 m | 2 mm | 132 mm | 2 mm |
+
+(Simulated with a perfect lens: expect a few mm more for real.) So with a camera at head height:
+
+- **Type every robot's tag height** (Robots tab → *Tag height*). This is the one thing that matters: without
+  it positions are off by 10–30 cm. The *Tag height correction* setup check and the Start tab tell you when
+  it is missing, and by how much positions would be off.
+- **Frame the 4 corner tags with a margin**: the near ones tend to fall out at the bottom of the image.
+- **Use `homography mode: locked`** (Field & tags): computed once with the field empty, it stays valid when
+  robots pass in front of a corner tag, which happens a lot at a low angle. If the tripod gets bumped, it is
+  recomputed automatically.
+- **Bigger robot tags or a higher resolution**: the far side of the field is seen from further away and
+  at an angle. 60 mm tags give only 1.5–3 pixels per bit at 1280×960: prefer 80–100 mm robot tags, or
+  1920×1440. The *Tag size in the image* check gives the real value.
+- Tall robots can hide each other from a low camera: put the camera higher, or on the side where robots
+  rarely line up.
+
+The dashboard shows where the middleware thinks the camera is (*Camera position*), which is a quick sanity
+check of the setup:
+
+![Camera position on the dashboard](images/oblique-world.png)
+
+![Camera at head height, robots placed at home](images/oblique-start.png)
+
+> Try a placement before installing it: in the configuration set `camera.source: synthetic`,
+> `camera.synthetic.view: oblique`, and `camera.synthetic.camera_x/camera_y/camera_height` (empty x/y =
+> centred, 0.8 m in front of the field) and `robot_tag_height`. The simulator then renders what a real
+> camera there would see, with the parallax of the robot tags.
 
 ## Light
 

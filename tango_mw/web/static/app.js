@@ -273,7 +273,7 @@ function renderRobots() {
         h("button", { class: "danger ghost", onclick: () => { if (confirm(`Delete ${r.name}?`)) { draft.robots.splice(idx, 1); markDirty(); renderRobots(); } } }, "Delete")),
       h("div", { class: "cols3" },
         h("div", {}, h("h4", {}, "Identity & output"), buildForm(rs, r, { skip: ["controller", "controller_params", "calibration", "home"], openNested: true, basic: BASIC.robot }),
-          homeEditor(r)),
+          tagHeightEditor(r), homeEditor(r)),
         h("div", {}, h("h4", {}, "Controller"), h("div", { class: "field" }, h("label", {}, "controller"), ctrlSel), params),
         h("div", {}, h("h4", {}, "Calibration"),
           h("div", { class: "row" }, procSel),
@@ -305,6 +305,16 @@ $("#addrobot").addEventListener("click", () => {
     output: { type: "twist", topic: "/{name}/cmd_vel" }, calibration: clone(serverCfg.robots[0]?.calibration ?? defaultCalibration()) });
   markDirty(); renderRobots();
 });
+// height of the robot's tag above the floor: needed to correct the parallax (oblique cameras)
+function tagHeightEditor(r) {
+  const i = h("input", { type: "number", step: "0.5", min: "0" });
+  i.value = r.calibration && r.calibration.tag_height ? +(r.calibration.tag_height * 100).toFixed(1) : "";
+  i.addEventListener("input", () => { r.calibration.tag_height = i.value === "" ? 0 : Number(i.value) / 100; markDirty(); });
+  return h("div", { class: "field" },
+    h("label", {}, "Tag height (cm) ", h("span", { class: "help", "data-help": "Height of the tag above the floor, measured with a ruler. Seen at an angle a raised tag appears away from its robot (several cm, much more with a camera at head height); the middleware corrects it with this height and the camera position it estimates from the boundary tags. 0 = tag on the floor." }, "?"),
+      h("small", {}, "from the floor to the tag")), i);
+}
+
 // home position (GAMA units) and go-to, in the robot card
 function homeEditor(r) {
   const unit = draft.logical.heading_unit;
@@ -392,6 +402,9 @@ function renderStatus() {
   kv("Visible world tags", `${w.world_tags_visible.join(", ") || "none"}${missing.length ? " (missing: " + missing.join(", ") + ")" : ""}`, missing.length ? "warn" : "ok");
   kv("Unknown tags", w.unknown_tags.join(", ") || "none");
   kv("Image", w.image_size.join(" × "));
+  const cam = w.camera;
+  kv("Camera position", cam ? `(${fmt(cam.x, 2)}, ${fmt(cam.y, 2)}) m, ${fmt(cam.height, 2)} m high, tilted ${fmt(cam.tilt_deg, 0)}° ` +
+    `(${cam.source === "estimated" ? "estimated from the tags" : cam.source === "fov" ? "seen from above, typical field of view" : "lens intrinsics"})` : "–");
   kv("Logical frame", `${w.logical.width} × ${w.logical.height}, origin ${w.logical.origin}, heading in ${w.logical.heading_unit}`);
   const gi = $("#gamainfo"); gi.innerHTML = "";
   gi.append(h("div", {}, "Publishers on /requests"), h("div", {}, s.gama.publishers_on_requests ?? "n/a (no ROS)"),
@@ -514,10 +527,6 @@ function identOptions() {
 }
 function prefillWorldDims() {
   if (!draft) return;
-  if (!$("#wwidth").value) {
-    const xs = draft.world.tags.map(t => t.x), ys = draft.world.tags.map(t => t.y);
-    if (xs.length) { $("#wwidth").value = Math.max(...xs) - Math.min(...xs); $("#wheight").value = Math.max(...ys) - Math.min(...ys); }
-  }
   if (!$("#disctpl").value) $("#disctpl").value = draft.robots[0]?.output.topic || "/{name}/cmd_vel";
 }
 function nextUnassigned() { return Math.min(0, ...draft.robots.map(r => r.tag_id)) - 1; }
@@ -566,10 +575,13 @@ $("#scanbtn").addEventListener("click", async () => {
 $("#proposeworld").addEventListener("click", async () => {
   const out = $("#worldproposal"); out.textContent = "scan…";
   try {
-    const r = await api("POST", "/api/setup/propose_world", { width: Number($("#wwidth").value), height: Number($("#wheight").value),
+    const r = await api("POST", "/api/setup/propose_world", { width: Number($("#wwidth").value) || null, height: Number($("#wheight").value) || null,
       rotation: Number($("#wrot").value), mirror: $("#wmirror").checked, duration: Number($("#scandur").value) });
     lastScan = r.scan; renderScan();
     out.innerHTML = "";
+    if (r.estimated) out.append(h("p", { class: "small" }, h("b", {}, `Estimated from the printed tags (${fmt(r.estimated.tag_size * 1000, 0)} mm): `),
+      `${fmt(r.estimated.width, 2)} m × ${fmt(r.estimated.height, 2)} m between tag centres (±2 %, fit ${fmt(r.estimated.rms_px, 2)} px). `,
+      "Positions are relative to these 4 tags anyway: the size only sets the units (m/s, tolerances)."));
     const keepBox = h("input", { type: "checkbox" });
     out.append(h("table", {}, h("tr", {}, h("th", {}, "Tag"), h("th", {}, "x (m)"), h("th", {}, "y (m)")),
       r.tags.map(t => h("tr", {}, h("td", {}, "#" + t.id), h("td", {}, t.x), h("td", {}, t.y)))),
@@ -723,6 +735,10 @@ function renderSteps() {
       "Stick a tag on each robot (FRONT arrow forward). Scan & assign → Identify finds which tag is on which robot."],
     ["Robots listening on ROS", "network", s.bus.kind !== "ros2" ? "warn" : st(known.length && online.length === known.length, online.length), s.bus.kind !== "ros2" ? "no ROS 2 (loopback bus)" : `${online.length}/${known.length} with a subscriber on their command topic`,
       "Start the robots' ROS nodes; same ROS_DOMAIN_ID as the middleware."],
+    (() => { const p = s.checks && s.checks.checks.find(c => c.id === "parallax");
+      const st2 = !p || p.status === "unknown" ? "warn" : p.status;
+      return ["Robot tag heights (parallax)", "robots", st2, p ? p.value : "waiting for the camera position",
+        "Robots tab → Tag height: measure the height of each robot's tag above the floor. Matters most with a camera at head height."]; })(),
     ["Robots calibrated", "robots", st(robots.length && calibrated.length === robots.length, calibrated.length), `${calibrated.length}/${robots.length}`,
       "Robots tab → Calibration → 'full' → Start, one robot at a time, with room around it."],
     ["Home positions set", "robots", st(robots.length && homed.length === robots.length, homed.length), `${homed.length}/${robots.length} (optional)`,

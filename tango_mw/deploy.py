@@ -32,8 +32,9 @@ def scan_tags(app, duration: float = 1.0) -> Dict[str, Any]:
             snap: WorldSnapshot = app.snapshot
             frames += 1
             for d in snap.detections:
-                s = stats.setdefault(d.id, {"n": 0, "centers": [], "sides": [], "angles": []})
+                s = stats.setdefault(d.id, {"n": 0, "centers": [], "sides": [], "angles": [], "corners": []})
                 s["n"] += 1
+                s["corners"].append(np.asarray(d.corners, dtype=np.float64))
                 s["centers"].append(d.center)
                 s["sides"].append(float(np.mean(np.linalg.norm(np.roll(d.corners, -1, 0) - d.corners, axis=1))))
                 v = d.top_mid - d.center
@@ -54,6 +55,7 @@ def scan_tags(app, duration: float = 1.0) -> Dict[str, Any]:
             "v": float(c[1]),
             "side_px": float(np.mean(s["sides"])),
             "image_angle": math.degrees(math.atan2(np.mean(np.sin(s["angles"])), np.mean(np.cos(s["angles"])))),
+            "corners": np.mean(s["corners"], axis=0).round(3).tolist(),  # averaged: used to estimate the field size
             "role": "world" if tid in world_ids else ("robot" if tid in robots else "unknown"),
             "robot": robots.get(tid),
         }
@@ -95,6 +97,18 @@ def propose_world_corners(tags: List[Dict[str, Any]], width: float, height: floa
     if mirror:
         world = [(width - x, y) for x, y in world]
     return [{"id": i, "x": round(w[0], 6), "y": round(w[1], 6)} for i, w in zip(pick, world)]
+
+
+def estimate_field(scan: Dict[str, Any], tag_size: float, rotation: int = 0, mirror: bool = False,
+                   ids: Optional[List[int]] = None) -> Dict[str, Any]:
+    """Width and height of the field from the printed size of the corner tags (no measuring)."""
+    from .survey import field_size
+
+    unit = propose_world_corners(scan["tags"], 1.0, 1.0, rotation, mirror, ids)
+    corners_world = {t["id"]: (t["x"], t["y"]) for t in unit}
+    obs = {t["id"]: np.asarray(t["corners"]) for t in scan["tags"] if t["id"] in corners_world and t.get("corners")}
+    w, h, rms = field_size(obs, tag_size, corners_world)
+    return {"width": round(w, 3), "height": round(h, 3), "rms_px": round(rms, 2), "tag_size": tag_size}
 
 
 def measure_tags(scan: Dict[str, Any], ids: Optional[List[int]] = None) -> List[Dict[str, Any]]:

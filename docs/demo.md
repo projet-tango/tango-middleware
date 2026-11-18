@@ -19,8 +19,9 @@ running yet):
 3. Image quality — no red setup check.
 4. Robots seen by the camera — 3/3.
 5. Robots listening on ROS — 3/3 with a subscriber.
-6. Robots calibrated — 3/3.
-7. Home positions set — optional (the demo model sends its own).
+6. Robot tag heights (parallax) — every robot's tag height set (essential with a camera at head height).
+7. Robots calibrated — 3/3.
+8. Home positions set — optional (the demo model sends its own).
 
 Keep the **EMERGENCY STOP** button (top right of every page) at hand: it stops every robot at once,
 including during placement and calibration. Click it again to release.
