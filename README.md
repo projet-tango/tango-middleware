@@ -152,14 +152,14 @@ The protocol (WebSocket + UDP discovery) is documented at the top of `tango_mw/v
 Steps 2 and 3 can also be done by scanning the scene. The assistant only writes to the **configuration being edited**: you review or correct its proposals, then click *Apply*. Manual entry is always possible.
 
 - **Scan**: lists the visible tags with their current role (landmark, robot or unknown), their detection rate and their position. Each unknown tag can be assigned to a robot, become a new robot or become a landmark.
-- **World corners**: you enter the width and height measured between the tags' centres. The 4 tags closest to the image corners then become the world corners. The top of the image is +y; if the camera is mounted differently, set the rotation or mirroring.
+- **World corners**: the 4 tags closest to the image corners become the world corners, wherever they were laid: positions (and the GAMA world) are relative to them, so nothing needs measuring. The real size, which only sets the units (m/s, tolerances), is estimated from the printed tag size (`survey.py`: one homography + the pose of every tag fitted to all the tag corners; ~2 % in simulation), or typed if measured. The top of the image is +y; if the camera is mounted differently, set the rotation or mirroring.
 - **Extra landmarks**: once the homography is valid, other tags lying on the floor are measured and can be added as landmarks (ticked one by one). The world can then still be computed if a corner is hidden.
 - **Robots**: "one robot per unknown tag", or **discovery on ROS**. This discovery looks for topics following the `/{name}/cmd_vel` pattern, and the message type sets the output: `Twist`, wheels or JSON. Discovered robots have no tag yet (negative `tag_id`).
 - **Identify**: the middleware spins the robot in place for ~1 s through its topic, then keeps the tag that rotated in the image. This needs neither a homography nor a correct tag to begin with. "Identify all" goes through every unassigned or invisible robot. If the tag already belonged to another robot, the two are swapped. If the robot cannot spin, the "forward" option makes it move forward instead.
 
 The scan is also available through the REST API: `/api/setup/scan`, `/api/setup/propose_world`, `/api/setup/measure_tags`, `/api/setup/discover_robots`, `/api/robots/<name>/identify`, `/api/robots/<name>/assign_tag`. In the simulated camera, `camera.synthetic.extra_robots` adds robots missing from the configuration, for practice.
 
-> **Parallax**: a tag mounted high on a robot appears slightly shifted relative to the floor. If this matters, enable `world.parallax`, with the camera's ground position and height, and fill in `calibration.tag_height` for each robot.
+> **Parallax / camera at head height**: a tag mounted on top of a robot appears shifted relative to the floor, a few cm with a camera above the field and 10–30 cm with a camera at head height looking at the field at an angle. Set each robot's tag height (*Tag height* in its card, `calibration.tag_height`): the middleware estimates the camera position and height from the boundary tags (`vision/camera_pose.py`: focal length from the perspective, or `world.parallax.fov_deg` when looking straight down) and corrects the positions (back to a few mm in simulation). The *Tag height correction* setup check says how far off positions would be otherwise. A measured camera position can be used instead (`world.parallax.auto_camera: false`). To try a camera placement without hardware: `camera.synthetic.view: oblique` with `camera_x/camera_y/camera_height` and `robot_tag_height`.
 
 ---
 
@@ -281,7 +281,7 @@ class MyController(Controller):
 tango_mw/
   config.py            configuration model (pydantic) + YAML
   frames.py            geometry, physical ↔ GAMA mapping
-  vision/              camera, phone receiver (mobile.py), setup checks (quality.py), AprilTag detection, homography & tracking, synthetic camera
+  vision/              camera, phone receiver (mobile.py), setup checks (quality.py), camera position (camera_pose.py), AprilTag detection, homography & tracking, synthetic camera (top or oblique)
   control/             controller API, built-in controllers, registry/plugins, calibration, go-to/placement, loop
   bus/                 ROS 2 (rclpy) and loopback
   app.py               orchestration (vision / control / publication threads)

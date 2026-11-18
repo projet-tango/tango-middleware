@@ -174,24 +174,94 @@ class _Server:
             pass
 
 
+class _Slot:
+    """A camera whose source is 'mobile': at most one phone feeds it."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.client: Optional[_Client] = None
+        self.jpeg: Optional[bytes] = None
+        self.stamp = 0.0
+        self.seq = 0
+
+
 class MobileHub:
+    """Receives the phones. Each camera configured with source 'mobile' is a slot; a phone is
+    assigned to a slot when it connects: the slot it fed last time (remembered in phones.json), else
+    a free slot, else a slot whose phone has been silent for 'stale_after' seconds."""
+
     def __init__(self, cfg: AppConfig, cert_dir: Path):
         self.cfg = cfg
         self.cert_dir = Path(cert_dir)
-        self.client: Optional[_Client] = None
         self.error: Optional[str] = None
         self.https_error: Optional[str] = None
         self._lock = threading.Lock()
         self._cond = threading.Condition()
-        self._jpeg: Optional[bytes] = None
-        self._stamp = 0.0
-        self._seq = 0
+        self._slots: Dict[str, _Slot] = {}
+        self._bindings: Dict[str, str] = self._load_bindings()   # camera name -> device id
         self._servers: List[_Server] = []
         self._udp: Optional[socket.socket] = None
         self._udp_thread: Optional[threading.Thread] = None
         self._running = False
         self._bound: Tuple[Any, ...] = ()
         self.instance = secrets.token_hex(4)
+        self._sync_slots(cfg)
+
+    # ------------------------------------------------------------------ slots
+    @staticmethod
+    def mobile_cameras(cfg: AppConfig) -> List[Any]:
+        return [c for c in cfg.all_cameras() if c.is_mobile]
+
+    def _sync_slots(self, cfg: AppConfig) -> None:
+        names = [c.name for c in self.mobile_cameras(cfg)]
+        with self._lock:
+            for n in names:
+                self._slots.setdefault(n, _Slot(n))
+            gone = [n for n in self._slots if n not in names]
+        for n in gone:
+            self.kick(n, reason="camera_removed")
+            with self._lock:
+                self._slots.pop(n, None)
+
+    def slot_names(self) -> List[str]:
+        return list(self._slots)
+
+    def _bindings_path(self) -> Path:
+        return self.cert_dir / "phones.json"
+
+    def _load_bindings(self) -> Dict[str, str]:
+        try:
+            return {str(k): str(v) for k, v in json.loads(self._bindings_path().read_text(encoding="utf-8")).items()}
+        except Exception:
+            return {}
+
+    def _save_bindings(self) -> None:
+        try:
+            self.cert_dir.mkdir(parents=True, exist_ok=True)
+            self._bindings_path().write_text(json.dumps(self._bindings, indent=1), encoding="utf-8")
+        except OSError as exc:  # pragma: no cover
+            log.warning("phones.json not saved: %s", exc)
+
+    def _assign(self, device: str, now: float, stale_after: float) -> Tuple[Optional[str], Optional[_Client]]:
+        """Pick the slot of a connecting phone (called with the lock held). Returns (slot, replaced client)."""
+        slots = self._slots
+        for name, dev in self._bindings.items():          # the camera this phone fed last time
+            if dev == device and name in slots:
+                return name, slots[name].client
+        for name, sl in slots.items():                    # a camera nobody has fed yet
+            if name not in self._bindings and sl.client is None:
+                return name, None
+        for name, sl in slots.items():                    # a camera whose phone is gone
+            c = sl.client
+            if c is None or now - max(c.last_activity, c.connected_at) >= stale_after:
+                return name, c
+        return None, None
+
+    def forget(self, camera: str) -> None:
+        """Unbind the phone of a camera: the next phone that connects can take it."""
+        self._bindings.pop(camera, None)
+        self._save_bindings()
+        self.kick(camera, reason="forgotten")
 
     # ------------------------------------------------------------------ lifecycle
     def _binding(self, cfg: AppConfig) -> Tuple[Any, ...]:
@@ -220,16 +290,17 @@ class MobileHub:
                 self.https_error = f"HTTPS unavailable (port {m.https_port}): {exc}"
                 log.warning(self.https_error)
         self._start_udp(m.port)
-        log.info("Phone receiver ready: ws://%s:%d/ws%s — pairing code %s",
+        log.info("Phone receiver ready: ws://%s:%d/ws%s — pairing code %s — camera(s): %s",
                  (lan_addresses() or ["?"])[0], m.port,
                  f", web page https://…:{m.https_port}/" if m.https_port and not self.https_error else "",
-                 m.pairing_code if m.require_code else "(disabled)")
+                 m.pairing_code if m.require_code else "(disabled)", ", ".join(self._slots) or "none")
 
     def stop(self) -> None:
         self._running = False
-        self.kick(reason="server_stopped", code=1001)
-        for s in self._servers:
-            s.stop()
+        for n in list(self._slots):
+            self.kick(n, reason="server_stopped", code=1001)
+        for srv in self._servers:
+            srv.stop()
         self._servers = []
         if self._udp is not None:
             try:
@@ -245,6 +316,7 @@ class MobileHub:
     def update_config(self, cfg: AppConfig) -> None:
         old_code = self.cfg.camera.mobile.pairing_code
         self.cfg = cfg
+        self._sync_slots(cfg)
         if self._binding(cfg) != self._bound:
             log.info("Phone receiver: address/ports changed, restarting")
             self.stop()
@@ -252,21 +324,27 @@ class MobileHub:
             return
         m = cfg.camera.mobile
         if m.require_code and m.pairing_code != old_code:
-            self.kick(reason="bad_code", code=4401)  # the phone has to pair again
+            for n in list(self._slots):
+                self.kick(n, reason="bad_code", code=4401)  # the phones have to pair again
         else:
             self.push_settings()
 
     # ------------------------------------------------------------------ frames
-    def wait_frame(self, after_seq: int, timeout: float) -> Tuple[int, Optional[bytes], float]:
+    def wait_frame(self, slot: str, after_seq: int, timeout: float) -> Tuple[int, Optional[bytes], float]:
         with self._cond:
-            if self._seq == after_seq:
+            sl = self._slots.get(slot)
+            if sl is not None and sl.seq == after_seq:
                 self._cond.wait(timeout)
-            return self._seq, self._jpeg, self._stamp
+                sl = self._slots.get(slot)
+            if sl is None:
+                return after_seq, None, 0.0
+            return sl.seq, sl.jpeg, sl.stamp
 
-    def _push(self, client: _Client, data: bytes) -> None:
+    def _push(self, slot: str, client: _Client, data: bytes) -> None:
         now = time.time()
         with self._lock:
-            if self.client is not client:
+            sl = self._slots.get(slot)
+            if sl is None or sl.client is not client:
                 return
             dt = now - client.last_frame if client.last_frame else 0.0
             client.last_frame = client.last_activity = now
@@ -275,14 +353,15 @@ class MobileHub:
             if 0 < dt < 5:
                 client.fps = 0.9 * client.fps + 0.1 / dt if client.fps else 1.0 / dt
         with self._cond:
-            self._jpeg, self._stamp = data, now
-            self._seq += 1
+            sl.jpeg, sl.stamp = data, now
+            sl.seq += 1
             self._cond.notify_all()
 
     # ------------------------------------------------------------------ phone control
-    def settings(self) -> Dict[str, Any]:
-        cam, m = self.cfg.camera, self.cfg.camera.mobile
-        return {"type": "settings", "width": cam.width, "height": cam.height, "fps": cam.fps,
+    def settings(self, slot: Optional[str] = None) -> Dict[str, Any]:
+        cam = self.cfg.camera_named(slot) or self.cfg.camera
+        m = cam.mobile
+        return {"type": "settings", "camera": cam.name, "width": cam.width, "height": cam.height, "fps": cam.fps,
                 "jpeg_quality": m.jpeg_quality, "lens": m.lens, "focus": m.focus,
                 "exposure_compensation": m.exposure_compensation, "torch": m.torch,
                 "max_exposure_ms": m.max_exposure_ms}
@@ -294,24 +373,41 @@ class MobileHub:
             pass
 
     def push_settings(self) -> None:
-        c = self.client
-        if c is not None:
-            msg = self.settings()
-            self._send(c, lambda: c.ws.send_json(msg))
+        for name, sl in list(self._slots.items()):
+            c = sl.client
+            if c is not None:
+                msg = self.settings(name)
+                self._send(c, lambda c=c, msg=msg: c.ws.send_json(msg))
 
-    def kick(self, reason: str = "kicked", code: int = 4000) -> None:
-        with self._lock:
-            c, self.client = self.client, None
-        if c is not None:
-            async def bye():
-                try:
-                    await c.ws.send_json({"type": "error", "reason": reason})
-                    await c.ws.close(code)
-                except Exception:
-                    pass
-            self._send(c, bye)
+    def kick(self, slot: Optional[str] = None, reason: str = "kicked", code: int = 4000) -> None:
+        """Disconnect the phone of one camera (default: every phone)."""
+        names = [slot] if slot else list(self._slots)
+        for n in names:
+            with self._lock:
+                sl = self._slots.get(n)
+                c = sl.client if sl else None
+                if sl is not None:
+                    sl.client = None
+            if c is not None:
+                async def bye(c=c):
+                    try:
+                        await c.ws.send_json({"type": "error", "reason": reason})
+                        await c.ws.close(code)
+                    except Exception:
+                        pass
+                self._send(c, bye)
 
     # ------------------------------------------------------------------ status
+    @property
+    def client(self) -> Optional[_Client]:
+        """The phone of the first phone camera (single-camera setups)."""
+        sl = next(iter(self._slots.values()), None)
+        return sl.client if sl else None
+
+    def client_of(self, slot: str) -> Optional[_Client]:
+        sl = self._slots.get(slot)
+        return sl.client if sl else None
+
     def urls(self) -> Dict[str, Any]:
         m = self.cfg.camera.mobile
         ips = lan_addresses() if m.host in ("0.0.0.0", "") else [m.host]
@@ -327,22 +423,27 @@ class MobileHub:
     def describe(self) -> Dict[str, Any]:
         m = self.cfg.camera.mobile
         c = self.client
+        cams = [{"camera": n, "device": self._bindings.get(n), "client": sl.client.describe() if sl.client else None}
+                for n, sl in self._slots.items()]
         return {
             "running": bool(self._servers), "error": self.error, "https_error": self.https_error,
             "port": m.port, "https_port": m.https_port if not self.https_error else None,
             "require_code": m.require_code, "pairing_code": m.pairing_code,
-            "discovery": self._udp is not None, "client": c.describe() if c else None, **self.urls(),
+            "discovery": self._udp is not None, "client": c.describe() if c else None, "cameras": cams, **self.urls(),
         }
 
-    def waiting_reason(self) -> Optional[str]:
+    def waiting_reason(self, slot: Optional[str] = None) -> Optional[str]:
         if self.error:
             return self.error
-        c = self.client
+        c = self.client_of(slot) if slot else self.client
         if c is None:
             return "waiting for a phone"
         if not c.last_frame or time.time() - c.last_frame > 2.0:
             return f"phone {c.name} connected, no frames"
         return None
+
+    def _all_busy(self) -> bool:
+        return bool(self._slots) and all(sl.client is not None for sl in self._slots.values())
 
     # ------------------------------------------------------------------ UDP discovery
     def _start_udp(self, port: int) -> None:
@@ -376,7 +477,7 @@ class MobileHub:
             reply = {"type": "tango_here", "service": "tango-mw", "v": PROTOCOL_VERSION, "id": self.instance,
                      "name": socket.gethostname(), "port": m.port,
                      "https_port": m.https_port if not self.https_error else None,
-                     "code_required": m.require_code, "busy": self.client is not None}
+                     "code_required": m.require_code, "busy": self._all_busy()}
             try:
                 sock.sendto(json.dumps(reply).encode("utf-8"), addr)
             except OSError:
@@ -401,7 +502,7 @@ class MobileHub:
         def info():
             m = hub.cfg.camera.mobile
             return {"service": "tango-mw", "v": PROTOCOL_VERSION, "id": hub.instance, "name": socket.gethostname(),
-                    "code_required": m.require_code, "busy": hub.client is not None}
+                    "code_required": m.require_code, "busy": hub._all_busy(), "cameras": hub.slot_names()}
 
         @api.websocket("/ws")
         async def ws_endpoint(ws: WebSocket):
@@ -424,30 +525,33 @@ class MobileHub:
                         secure=ws.url.scheme == "wss")
             now = time.time()
             with hub._lock:
-                cur = hub.client
-                if (cur is not None and cur.device != c.device
-                        and now - max(cur.last_activity, cur.connected_at) < m.stale_after):
-                    busy = cur.name
+                slot, cur = hub._assign(c.device, now, m.stale_after)
+                if slot is not None:
+                    hub._slots[slot].client = c
+                    changed = hub._bindings.get(slot) != c.device
+                    hub._bindings[slot] = c.device
                 else:
-                    busy = None
-                    hub.client = c
-            if busy is not None:
-                log.warning("Phone %s refused: %s is already streaming", c.name, busy)
+                    changed = False
+            if slot is None:
+                log.warning("Phone %s refused: every phone camera already has a phone (%s)", c.name,
+                            ", ".join(hub.slot_names()) or "no camera set to 'mobile'")
                 await _refuse(ws, "busy", 4409)
                 return
-            if cur is not None:
-                log.info("Phone %s replaced by a new connection", cur.name)
+            if changed:
+                hub._save_bindings()
+            if cur is not None and cur is not c:
+                log.info("Camera %s: phone %s replaced by %s", slot, cur.name, c.name)
                 hub._send(cur, lambda: _refuse(cur.ws, "replaced", 4000))
-            log.info("Phone connected: %s (%s, %s)", c.name, c.platform, peer)
+            log.info("Phone connected: %s (%s, %s) -> camera %s", c.name, c.platform, peer, slot)
             try:
-                await ws.send_json({"type": "welcome", "server": socket.gethostname(), "v": PROTOCOL_VERSION})
-                await ws.send_json(hub.settings())
+                await ws.send_json({"type": "welcome", "server": socket.gethostname(), "camera": slot, "v": PROTOCOL_VERSION})
+                await ws.send_json(hub.settings(slot))
                 while True:
                     msg = await ws.receive()
                     if msg["type"] == "websocket.disconnect":
                         break
                     if msg.get("bytes"):
-                        hub._push(c, msg["bytes"])
+                        hub._push(slot, c, msg["bytes"])
                     elif msg.get("text"):
                         c.last_activity = time.time()
                         try:
@@ -460,11 +564,12 @@ class MobileHub:
                 pass
             finally:
                 with hub._lock:
-                    mine = hub.client is c
+                    sl = hub._slots.get(slot)
+                    mine = sl is not None and sl.client is c
                     if mine:
-                        hub.client = None
+                        sl.client = None
                 if mine:
-                    log.warning("Phone disconnected: %s", c.name)
+                    log.warning("Phone disconnected: %s (camera %s)", c.name, slot)
 
         async def _refuse(ws, reason: str, code: int):
             try:
@@ -477,32 +582,38 @@ class MobileHub:
 
 
 class MobileSource(FrameSource):
-    """FrameSource view on the hub. Closing it does not disconnect the phone."""
+    """FrameSource view on one camera slot of the hub. Closing it does not disconnect the phone."""
 
     reopen_on_failure = False
 
-    def __init__(self, hub: MobileHub):
+    def __init__(self, hub: MobileHub, slot: Optional[str] = None):
         self.hub = hub
-        self._seq = hub._seq
+        self.slot = slot or (hub.slot_names() or ["main"])[0]
+        sl = hub._slots.get(self.slot)
+        self._seq = sl.seq if sl else 0
 
     def read(self):
-        seq, jpg, stamp = self.hub.wait_frame(self._seq, timeout=0.5)
+        seq, jpg, stamp = self.hub.wait_frame(self.slot, self._seq, timeout=0.5)
         if seq == self._seq or jpg is None:
             return False, None, time.time()
         self._seq = seq
         frame = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             return False, None, stamp
-        c = self.hub.client
+        c = self.hub.client_of(self.slot)
         if c is not None:
             c.height, c.width = frame.shape[:2]
         return True, frame, stamp
 
     def status_error(self) -> Optional[str]:
-        return self.hub.waiting_reason()
+        return self.hub.waiting_reason(self.slot)
+
+    def phone_stats(self) -> Optional[Dict[str, Any]]:
+        c = self.hub.client_of(self.slot)
+        return c.stats if c else None
 
     def info(self) -> dict:
-        c = self.hub.client
+        c = self.hub.client_of(self.slot)
         d = {"backend": "mobile", "width": c.width if c else 0, "height": c.height if c else 0,
              "fps": c.fps if c else 0.0}
         if c:

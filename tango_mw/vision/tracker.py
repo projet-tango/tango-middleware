@@ -18,6 +18,7 @@ import numpy as np
 
 from ..config import CameraConfig, RobotConfig, WorldConfig
 from ..frames import apply_h, convex_hull, wrap_angle
+from .camera_pose import CameraPose, estimate_camera_pose
 from .detector import TagDetection
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class WorldSnapshot:
     homography_stamp: float = 0.0
     homography_locked: bool = False
     camera_moved_at: float = 0.0  # last time a locked homography no longer matched the tags
+    camera: Optional[CameraPose] = None  # camera position estimated from the homography
     world_tags_visible: List[int] = field(default_factory=list)
     bounds: List[Tuple[float, float]] = field(default_factory=list)
     robots: Dict[str, RobotObservation] = field(default_factory=dict)
@@ -85,6 +87,8 @@ class Tracker:
         self._H_stamp = 0.0
         self._locked = False
         self._mismatch = 0  # consecutive frames where the locked H disagrees with the tags
+        self._cam: Optional[CameraPose] = None
+        self._cam_for: Optional[np.ndarray] = None  # the H the camera pose was computed for
         self._moved_at = 0.0
         self._robots: Dict[str, RobotObservation] = {}
         self._robot_cfg: Dict[int, RobotConfig] = {}
@@ -111,6 +115,7 @@ class Tracker:
             self.bounds = convex_hull((t.x, t.y) for t in world.tags)
             self._H = None
             self._locked = False
+            self._cam = self._cam_for = None
 
     def relock(self) -> None:
         with self._lock:
@@ -156,12 +161,36 @@ class Tracker:
         err = float(np.mean(np.linalg.norm(apply_h(H, src_a) - dst_a, axis=1)))
         return H, err, seen
 
+    def _update_camera(self, image_size) -> None:
+        """Camera position from the homography, smoothed; recomputed only when H changes."""
+        if self._H is None or (self._cam_for is not None and np.array_equal(self._cam_for, self._H)):
+            return
+        self._cam_for = self._H.copy()
+        cam = estimate_camera_pose(self._H, image_size, self.camera.camera_matrix, self.world.parallax.fov_deg)
+        if cam is None:
+            return
+        old = self._cam
+        if old is not None and old.source == cam.source:
+            a = 0.8
+            cam = CameraPose(a * old.x + (1 - a) * cam.x, a * old.y + (1 - a) * cam.y,
+                             a * old.height + (1 - a) * cam.height, a * old.tilt + (1 - a) * cam.tilt,
+                             a * old.focal_px + (1 - a) * cam.focal_px, cam.source)
+        self._cam = cam
+
+    def camera_position(self) -> Optional[tuple]:
+        """(x, y, height) used for the parallax correction, or None."""
+        px = self.world.parallax
+        if px.auto_camera:
+            return (self._cam.x, self._cam.y, self._cam.height) if self._cam is not None else None
+        return (px.camera_x, px.camera_y, px.camera_height)
+
     def _parallax(self, p: np.ndarray, tag_height: float) -> np.ndarray:
         px = self.world.parallax
-        if not px.enabled or tag_height <= 0 or px.camera_height <= tag_height:
+        cam = self.camera_position() if px.enabled and tag_height > 0 else None
+        if cam is None or cam[2] <= tag_height:
             return p
-        c = np.array([px.camera_x, px.camera_y])
-        return c + (p - c) * (1.0 - tag_height / px.camera_height)
+        c = np.array(cam[:2])
+        return c + (p - c) * (1.0 - tag_height / cam[2])
 
     # ------------------------------------------------------------------ main
     def process(self, detections: List[TagDetection], stamp: float, image_size=(0, 0), fps: float = 0.0) -> WorldSnapshot:
@@ -184,6 +213,8 @@ class Tracker:
             else:
                 seen = [t.id for t in self.world.tags if t.id in by_id]
                 self._check_locked(by_id, seen, stamp)
+
+            self._update_camera(image_size)
 
             # --- robots
             H = self._H
@@ -215,6 +246,7 @@ class Tracker:
                 homography_stamp=self._H_stamp,
                 homography_locked=self._locked,
                 camera_moved_at=self._moved_at,
+                camera=self._cam,
                 world_tags_visible=seen,
                 bounds=list(self.bounds),
                 robots={n: o.copy() for n, o in self._robots.items()},

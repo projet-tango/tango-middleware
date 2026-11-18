@@ -398,6 +398,7 @@ class App:
             "homography_age": (now - snap.homography_stamp) if H is not None else None,
             "homography_locked": snap.homography_locked,
             "camera_moved_age": (now - snap.camera_moved_at) if snap.camera_moved_at else None,
+            "camera": snap.camera.as_dict() if snap.camera else None,
             "world_tags_expected": [t.id for t in self.cfg.world.tags],
             "world_tags_visible": snap.world_tags_visible,
             "unknown_tags": snap.unknown_tags,

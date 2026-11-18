@@ -27,6 +27,15 @@ class SyntheticConfig(_Model):
     robot_tag_size: float = Field(0.08, description="Side of the robot tags (m)")
     randomize_dynamics: bool = Field(True, description="Random 'true' gains/offsets to test calibration")
     extra_robots: int = Field(0, ge=0, description="Simulated robots missing from the config (to practise scanning / identification)")
+    view: Literal["top", "oblique"] = Field(
+        "top", description="top: schematic view from above; oblique: a real pinhole camera placed below (default: head height in front of the field)")
+    camera_x: Optional[float] = Field(None, description="oblique: camera ground point x (m), empty = centre of the field")
+    camera_y: Optional[float] = Field(None, description="oblique: camera ground point y (m), empty = 0.8 m in front of the field")
+    camera_height: float = Field(1.6, gt=0.1, description="oblique: camera height above the floor (m)")
+    fov_deg: float = Field(70.0, gt=10, lt=170, description="oblique: horizontal field of view")
+    image_width: int = Field(1280, ge=160, description="oblique: image width (px)")
+    image_height: int = Field(960, ge=120, description="oblique: image height (px)")
+    robot_tag_height: float = Field(0.0, ge=0, description="Height of the simulated robots' tags above the floor (m); seen with parallax in the oblique view")
     seed: int = 1
 
 
@@ -52,6 +61,8 @@ class MobileCameraConfig(_Model):
 
 
 class CameraConfig(_Model):
+    name: str = Field("main", description="Camera name (unique), shown in the interface")
+    enabled: bool = True
     source: str = Field(
         "synthetic",
         description="Camera index (e.g. 0), video file path, URL (rtsp/http), 'mobile' (phone) or 'synthetic'",
@@ -92,12 +103,18 @@ class WorldTag(_Model):
 
 
 class ParallaxConfig(_Model):
-    """Correct for tags mounted above the ground plane (camera ground point + height)."""
+    """Correct for robot tags mounted above the floor (set each robot's calibration.tag_height).
 
-    enabled: bool = False
-    camera_x: float = 0.0
-    camera_y: float = 0.0
-    camera_height: float = 2.0
+    Seen at an angle, a tag 10 cm above the floor appears several cm away from its robot (much more
+    with a camera at head height). The correction needs the camera position, which is estimated
+    from the boundary tags by default."""
+
+    enabled: bool = Field(True, description="Correct robot positions for the height of their tag (calibration.tag_height)")
+    auto_camera: bool = Field(True, description="Estimate the camera position and height from the boundary tags (otherwise use the values below)")
+    fov_deg: float = Field(70.0, gt=10, lt=170, description="Horizontal field of view, used when the camera looks almost straight down (typical phone: 65-78)")
+    camera_x: float = Field(0.0, description="Manual: ground point below the camera, x (m)")
+    camera_y: float = Field(0.0, description="Manual: ground point below the camera, y (m)")
+    camera_height: float = Field(2.0, gt=0, description="Manual: camera height above the floor (m)")
 
 
 class WorldConfig(_Model):
@@ -260,6 +277,10 @@ class PluginsConfig(_Model):
 
 class AppConfig(_Model):
     camera: CameraConfig = CameraConfig()
+    cameras: List[CameraConfig] = Field(
+        default_factory=list,
+        description="Additional cameras. All of them see the same boundary tags (at least 4 floor tags known in each view); "
+                    "robots seen by several cameras are fused. Phone settings (port, pairing code) are those of the main camera.")
     detector: DetectorConfig = DetectorConfig()
     world: WorldConfig = WorldConfig()
     logical: LogicalFrameConfig = LogicalFrameConfig()
@@ -286,8 +307,26 @@ class AppConfig(_Model):
             raise ValueError("duplicate robot tag_id")
         return robots
 
+    @field_validator("cameras")
+    @classmethod
+    def _unique_cameras(cls, cams: List[CameraConfig], info) -> List[CameraConfig]:
+        main = info.data.get("camera")
+        names = [c.name for c in cams] + ([main.name] if main is not None else [])
+        if len(set(names)) != len(names):
+            raise ValueError("camera names must be unique")
+        return cams
+
     def robot(self, name: str) -> Optional[RobotConfig]:
         return next((r for r in self.robots if r.name == name), None)
+
+    def all_cameras(self) -> List[CameraConfig]:
+        """The main camera first, then the enabled additional ones."""
+        return [self.camera] + [c for c in self.cameras if c.enabled]
+
+    def camera_named(self, name: Optional[str]) -> Optional[CameraConfig]:
+        if not name:
+            return self.camera
+        return next((c for c in [self.camera, *self.cameras] if c.name == name), None)
 
 
 # --------------------------------------------------------------------------- IO
@@ -296,7 +335,20 @@ def load_config(path: Optional[Path]) -> AppConfig:
         return AppConfig()
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    return AppConfig.model_validate(data)
+    return AppConfig.model_validate(_migrate(data))
+
+
+def _migrate(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Bring configurations written by older versions up to date."""
+    px = (data.get("world") or {}).get("parallax")
+    if isinstance(px, dict) and "auto_camera" not in px:
+        # Before the camera position was estimated automatically, the parallax correction was off by
+        # default because it needed a hand-measured camera position: switch to the new default (on,
+        # automatic) unless a camera position had actually been entered.
+        manual = px.get("enabled") and (px.get("camera_x") or px.get("camera_y") or px.get("camera_height", 2.0) != 2.0)
+        px["auto_camera"] = not manual
+        px["enabled"] = True
+    return data
 
 
 def save_config(cfg: AppConfig, path: Path) -> None:

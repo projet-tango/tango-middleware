@@ -24,9 +24,11 @@ every change live; **Apply & save** writes `config/config.yaml`.
 - **GAMA world**: `width` = `height` = 100, `origin` = `top_left`, `heading unit` = `deg`. The square of
   tags becomes the whole GAMA world.
 
-**Without typing the positions**: **Scan & assign** → *2. World frame*: type the measured width and
-height (1.5 × 1.5), click **Propose the corners**: the 4 tags closest to the image corners become the
-corners, then **Apply**.
+**Without typing anything** (recommended): **Scan & assign** → *2. World frame*: leave *Width* and *Height*
+empty, click **Propose the corners**. The 4 tags closest to the image corners become the corners of the
+world, and the size between their centres is estimated from the printed tag size (the *Boundary tags* size
+of *Field & tags*, 100 mm here: it must match the print). Check the proposal, **Use (draft)**, then
+**Apply**. Type a width and height only if you measured them.
 
 ![Scan & assign](images/scan.png)
 
@@ -72,9 +74,11 @@ A **setup** badge in the header summarises them; hover it for the failing checks
 **Robots** tab: one card per robot. With the example configuration, robot1/2/3 already exist with tags
 10/11/12 and their output `/{name}/cmd_vel` (Twist).
 
-![A robot card](images/robot-card.png)
+![A robot card](images/oblique-robot-card.png)
 
 - **Identity & output**: name (= ROS namespace), tag id, enabled, output type and topic.
+- **Tag height**: height of the robot's tag above the floor, in cm. Needed to correct the parallax (see
+  [Camera at head height](hardware.md#camera-at-head-height)); a few cm off is fine.
 - **Controller**: how GAMA's *speed + heading* requests become commands; `heading_pid` suits
   differential robots.
 - **Calibration**: see the [next page](calibration.md).

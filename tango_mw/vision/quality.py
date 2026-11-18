@@ -21,6 +21,7 @@ import numpy as np
 
 from ..config import AppConfig
 from ..frames import apply_h
+from .camera_pose import CameraPose, parallax_shift
 from .detector import TagDetection, render_tag
 
 log = logging.getLogger(__name__)
@@ -218,6 +219,8 @@ class SetupChecks:
                               "frame rate / exposure cap (noisy image). Add light, lower camera.fps, or raise "
                               "camera.mobile.max_exposure_ms."))
 
+        out.append(parallax_check(snap, cfg))
+
         if not tm:
             out.append(_check("tags", "Tag image quality", "unknown", "no configured tag in view"))
             return out
@@ -269,6 +272,33 @@ class SetupChecks:
                                   "A robot at full speed smears its tag during one exposure: add light (shorter exposure), "
                                   "or lower the robots' max_linear."))
         return out
+
+
+def parallax_check(snap, cfg: AppConfig) -> Dict[str, Any]:
+    """Robot tags above the floor appear shifted, the more so the more oblique the camera."""
+    px = cfg.world.parallax
+    cam = getattr(snap, "camera", None) if px.auto_camera else CameraPose(px.camera_x, px.camera_y, px.camera_height, 0.0, 0.0, "manual")
+    label = "Tag height correction"
+    if cam is None:
+        return _check("parallax", label, "unknown", "camera position not known yet (needs the boundary tags)")
+    robots = [r for r in cfg.robots if r.enabled]
+    missing = [r.name for r in robots if r.calibration.tag_height <= 0]
+    corners = [(t.x, t.y) for t in cfg.world.tags] or [(cam.x, cam.y)]
+    shift10 = max(parallax_shift(cam, x, y, 0.10) for x, y in corners)  # worst case: farthest corner
+    where = f"camera at ({cam.x:.2f}, {cam.y:.2f}) m, {cam.height:.2f} m high, tilted {math.degrees(cam.tilt):.0f}°"
+    if not px.enabled:
+        if any(r.calibration.tag_height > 0 for r in robots):
+            return _check("parallax", label, "warn", "correction disabled (world.parallax.enabled)",
+                          "Robot tag heights are set but the correction is off: enable world.parallax.")
+        return _check("parallax", label, "warn" if shift10 > 0.02 else "ok", f"correction disabled; {where}",
+                      "Enable world.parallax and set each robot's tag height.")
+    if missing and shift10 > 0.02:
+        return _check("parallax", label, "bad" if shift10 > 0.08 else "warn",
+                      f"tag height not set for {', '.join(missing)}; a tag 10 cm high is seen up to {shift10 * 100:.0f} cm off",
+                      "Robots tab: measure the height of each robot's tag above the floor and type it in 'Tag height'. "
+                      "With this camera position, positions are wrong by that much otherwise.")
+    done = len(robots) - len(missing)
+    return _check("parallax", label, "ok", f"{done}/{len(robots)} robots corrected; {where}")
 
 
 def _px_per_metre(snap) -> Optional[float]:
