@@ -18,13 +18,13 @@ log = logging.getLogger(__name__)
 
 ENTRY_POINT_GROUP = "tango_mw.controllers"
 
-TEMPLATE = '''"""Contrôleur personnalisé : {name}.
+TEMPLATE = '''"""Custom controller: {name}.
 
-Ce fichier est rechargé automatiquement à chaque sauvegarde.
+This file is reloaded automatically every time it is saved.
 - state   : RobotState  (x, y, theta [rad], vx, vy, omega, speed, forward_speed, visible, age)
-- request : Request     (speed [m/s], heading [rad], extra = champs JSON supplémentaires)
+- request : Request     (speed [m/s], heading [rad], extra = additional JSON fields)
 - retour  : BodyCommand (linear [m/s], angular [rad/s], lateral [m/s])
-La calibration du robot (gains, zones mortes, dérive) est appliquée ensuite.
+The robot calibration (gains, dead zones, drift) is applied afterwards.
 """
 import math
 
@@ -33,13 +33,13 @@ from tango_mw.control import BodyCommand, Controller, Param
 
 class {cls}(Controller):
     name = "{name}"
-    description = "Décrivez votre contrôleur ici"
+    description = "Describe your controller here"
     params = {{
-        "k": Param(2.0, min=0.0, max=20.0, step=0.1, description="Gain sur l'erreur de cap"),
+        "k": Param(2.0, min=0.0, max=20.0, step=0.1, description="Gain on the heading error"),
     }}
 
     def reset(self):
-        # état interne (intégrales, filtres...)
+        # internal state (integrals, filters...)
         pass
 
     def compute(self, state, request, dt):
@@ -121,10 +121,10 @@ class ControllerRegistry:
             spec.loader.exec_module(module)
             classes = _controller_classes(module)
             if not classes:
-                raise RuntimeError("aucune sous-classe de Controller avec un attribut `name` trouvée")
+                raise RuntimeError("no Controller subclass with a `name` attribute found")
         except Exception:
             self.errors[str(path)] = traceback.format_exc(limit=5)
-            log.error("Erreur de chargement du contrôleur %s:\n%s", path, self.errors[str(path)])
+            log.error("Error loading controller %s:\n%s", path, self.errors[str(path)])
             return  # keep the previous version of the classes, if any
         self.errors.pop(str(path), None)
         for old in self._file_classes.get(path, []):
@@ -134,11 +134,11 @@ class ControllerRegistry:
         names = []
         for cls in classes:
             if self.origin.get(cls.name, "").startswith("builtin"):
-                log.warning("%s redéfinit le contrôleur intégré '%s'", path, cls.name)
+                log.warning("%s redefines the built-in controller '%s'", path, cls.name)
             self._add(cls, str(path))
             names.append(cls.name)
         self._file_classes[path] = names
-        log.info("Contrôleur(s) chargé(s) depuis %s: %s", path.name, ", ".join(names))
+        log.info("Controller(s) loaded from %s: %s", path.name, ", ".join(names))
 
     def reload(self, force: bool = False) -> bool:
         """Reload changed plugin files. Returns True if anything changed."""
@@ -172,7 +172,7 @@ class ControllerRegistry:
     def get(self, name: str) -> Type[Controller]:
         with self._lock:
             if name not in self.classes:
-                raise KeyError(f"contrôleur inconnu: {name}")
+                raise KeyError(f"unknown controller: {name}")
             return self.classes[name]
 
     def describe(self) -> dict:
@@ -189,9 +189,9 @@ class ControllerRegistry:
     # ------------------------------------------------------------------ authoring
     def _safe_path(self, filename: str) -> Path:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", filename):
-            raise ValueError("nom de fichier invalide (lettres, chiffres, _ et extension .py)")
+            raise ValueError("invalid file name (letters, digits, _ and a .py extension)")
         if not self.plugin_dirs:
-            raise ValueError("aucun dossier de plugins configuré")
+            raise ValueError("no plugin directory configured")
         for d in self.plugin_dirs:
             if (d / filename).exists():
                 return d / filename
@@ -216,7 +216,7 @@ class ControllerRegistry:
 
     def create(self, name: str) -> Path:
         if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
-            raise ValueError("nom invalide (minuscules, chiffres, _)")
+            raise ValueError("invalid name (lowercase letters, digits, _)")
         path = self._safe_path(name + ".py")
         if path.exists():
             raise FileExistsError(str(path))

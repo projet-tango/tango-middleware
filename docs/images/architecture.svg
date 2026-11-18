@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="14">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker>
+  </defs>
+  <rect width="900" height="420" fill="#fff"/>
+  <!-- phone -->
+  <rect x="30" y="40" width="170" height="110" rx="12" fill="#eef4ff" stroke="#2f6fed" stroke-width="2"/>
+  <text x="115" y="72" text-anchor="middle" font-weight="700">Phone</text>
+  <text x="115" y="94" text-anchor="middle">Tango Camera app</text>
+  <text x="115" y="114" text-anchor="middle" fill="#555" font-size="12">above the field,</text>
+  <text x="115" y="130" text-anchor="middle" fill="#555" font-size="12">pointing down</text>
+  <!-- middleware -->
+  <rect x="320" y="30" width="260" height="190" rx="12" fill="#f3f9f4" stroke="#17924b" stroke-width="2"/>
+  <text x="450" y="60" text-anchor="middle" font-weight="700">Tango middleware (PC)</text>
+  <text x="450" y="86" text-anchor="middle">AprilTag detection → homography</text>
+  <text x="450" y="106" text-anchor="middle">robot poses (m + GAMA units)</text>
+  <text x="450" y="132" text-anchor="middle">request → controller → calibration</text>
+  <text x="450" y="152" text-anchor="middle">go-to / placement, setup checks</text>
+  <text x="450" y="186" text-anchor="middle" fill="#555" font-size="12">web interface http://localhost:8080</text>
+  <!-- GAMA -->
+  <rect x="700" y="40" width="170" height="110" rx="12" fill="#fff6e6" stroke="#c27c0e" stroke-width="2"/>
+  <text x="785" y="72" text-anchor="middle" font-weight="700">GAMA</text>
+  <text x="785" y="94" text-anchor="middle">simulation model</text>
+  <text x="785" y="114" text-anchor="middle" fill="#555" font-size="12">+ ROS 2 plugin</text>
+  <!-- ROS bus -->
+  <rect x="120" y="270" width="660" height="34" rx="8" fill="#f4f5f7" stroke="#999"/>
+  <text x="450" y="292" text-anchor="middle" font-weight="600">ROS 2 network (same ROS_DOMAIN_ID)</text>
+  <!-- robots -->
+  <g>
+    <rect x="160" y="350" width="140" height="50" rx="10" fill="#fdeeee" stroke="#d23a3a" stroke-width="2"/>
+    <text x="230" y="380" text-anchor="middle" font-weight="600">robot1 (tag 10)</text>
+    <rect x="380" y="350" width="140" height="50" rx="10" fill="#fdeeee" stroke="#d23a3a" stroke-width="2"/>
+    <text x="450" y="380" text-anchor="middle" font-weight="600">robot2 (tag 11)</text>
+    <rect x="600" y="350" width="140" height="50" rx="10" fill="#fdeeee" stroke="#d23a3a" stroke-width="2"/>
+    <text x="670" y="380" text-anchor="middle" font-weight="600">robot3 (tag 12)</text>
+  </g>
+  <!-- arrows -->
+  <line x1="200" y1="95" x2="318" y2="95" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="259" y="85" text-anchor="middle" font-size="12" fill="#333">JPEG frames</text>
+  <text x="259" y="115" text-anchor="middle" font-size="12" fill="#333">Wi-Fi</text>
+  <line x1="450" y1="222" x2="450" y2="268" stroke="#555" stroke-width="2" marker-start="url(#a)" marker-end="url(#a)"/>
+  <line x1="785" y1="152" x2="785" y2="268" stroke="#555" stroke-width="2" marker-start="url(#a)" marker-end="url(#a)"/>
+  <text x="775" y="200" font-size="12" fill="#333" text-anchor="end">/tango/requests (from GAMA)</text>
+  <text x="775" y="218" font-size="12" fill="#333" text-anchor="end">/tango/robots/state (to GAMA)</text>
+  <line x1="230" y1="306" x2="230" y2="348" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="450" y1="306" x2="450" y2="348" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="670" y1="306" x2="670" y2="348" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="460" y="335" font-size="12" fill="#333">/robotN/cmd_vel (Twist)</text>
+</svg>

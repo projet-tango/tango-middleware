@@ -79,7 +79,7 @@ class Ros2Bus(Bus):
         self._thread = threading.Thread(target=self._spin, name="ros2-spin", daemon=True)
         self._thread.start()
         self.sync_robots(self.cfg.robots)
-        log.info("ROS 2 démarré: nœud %s, namespace %s, domain %s", self.cfg.ros.node_name, ns,
+        log.info("ROS 2 started: node %s, namespace %s, domain %s", self.cfg.ros.node_name, ns,
                  self.cfg.ros.domain_id if self.cfg.ros.domain_id is not None else env_info().get("ROS_DOMAIN_ID") or 0)
 
     def _spin(self) -> None:
@@ -103,7 +103,7 @@ class Ros2Bus(Bus):
             if self.ctx and self.ctx.ok():
                 self.rclpy.shutdown(context=self.ctx)
         except Exception as exc:  # pragma: no cover
-            log.warning("arrêt ROS 2: %s", exc)
+            log.warning("ROS 2 shutdown: %s", exc)
 
     def _on_estop(self, msg) -> None:
         if self.on_estop:

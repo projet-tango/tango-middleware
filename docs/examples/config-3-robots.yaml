@@ -1,0 +1,41 @@
+# Tango middleware — example configuration of the manual's scenario:
+#   square field 1.5 m x 1.5 m delimited by tags 0-3 (100 mm), three differential robots
+#   (tags 10, 11, 12, 60 mm) driven through /robotN/cmd_vel, a phone as the camera,
+#   GAMA world 100 x 100, ROS_DOMAIN_ID 42.
+# Copy it to config/config.yaml (only the values that differ from the defaults are listed:
+# the middleware fills in the rest and writes the complete file when you click Save).
+camera:
+  source: mobile
+  height: 960        # 4:3 suits a square field
+  mobile:
+    focus: infinity
+    max_exposure_ms: 10.0   # less motion blur; 10 ms is flicker-free under 50 Hz lights
+world:
+  tags:
+  - id: 0
+    x: 0.0
+    y: 0.0
+  - id: 1
+    x: 1.5
+    y: 0.0
+  - id: 2
+    x: 1.5
+    y: 1.5
+  - id: 3
+    x: 0.0
+    y: 1.5
+logical:
+  height: 100.0
+robots:
+- name: robot1
+  tag_id: 10
+  home: {x: 25, y: 80, heading: 270}   # start position, GAMA coordinates (270 = facing up)
+- name: robot2
+  tag_id: 11
+  home: {x: 50, y: 80, heading: 270}   # start position, GAMA coordinates (270 = facing up)
+- name: robot3
+  tag_id: 12
+  home: {x: 75, y: 80, heading: 270}   # start position, GAMA coordinates (270 = facing up)
+ros:
+  bus: ros2
+  domain_id: 42

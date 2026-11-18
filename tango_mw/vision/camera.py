@@ -27,6 +27,13 @@ _BACKENDS = {
 class FrameSource:
     """Interface: read() -> (ok, frame BGR, timestamp)."""
 
+    #: close and reopen the source after repeated read failures
+    reopen_on_failure = True
+
+    def status_error(self) -> Optional[str]:
+        """Why the source currently delivers no image (None when everything is fine)."""
+        return None
+
     def read(self) -> Tuple[bool, Optional[np.ndarray], float]:
         raise NotImplementedError
 
@@ -48,7 +55,7 @@ class OpenCVSource(FrameSource):
             api = cv2.CAP_DSHOW
         self.cap = cv2.VideoCapture(target, api)
         if not self.cap.isOpened():
-            raise RuntimeError(f"Impossible d'ouvrir la caméra '{cfg.source}' (backend {cfg.backend})")
+            raise RuntimeError(f"Cannot open camera '{cfg.source}' (backend {cfg.backend})")
         if cfg.fourcc:
             self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*cfg.fourcc[:4].ljust(4)))
         if cfg.width:
@@ -64,7 +71,7 @@ class OpenCVSource(FrameSource):
             self.cap.set(cv2.CAP_PROP_EXPOSURE, cfg.exposure)
         self._is_file = isinstance(target, str) and not target.lower().startswith(("rtsp:", "http:", "https:", "udp:", "tcp:"))
         log.info(
-            "Caméra ouverte: %s %dx%d @%.1f",
+            "Camera opened: %s %dx%d @%.1f",
             cfg.source,
             self.cap.get(cv2.CAP_PROP_FRAME_WIDTH),
             self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT),

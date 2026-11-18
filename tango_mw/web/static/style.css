@@ -68,3 +68,33 @@ code { font-family: ui-monospace, Consolas, monospace; }
 .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
 button.danger.ghost { background: transparent; color: var(--bad); }
 .field > input[type=checkbox] { justify-self: start; }
+
+/* help bubbles: <span class="help" data-help="…">?</span> — hover (desktop) or tap (touch) */
+.help { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px;
+        border-radius: 50%; border: 1px solid var(--accent); color: var(--accent); font: 600 11px system-ui, sans-serif;
+        cursor: help; vertical-align: middle; margin-left: 4px; user-select: none; }
+.help:hover::after, .help.open::after {
+  content: attr(data-help); position: absolute; z-index: 20; top: 22px; left: -10px; width: min(320px, 80vw);
+  padding: 8px 10px; border-radius: 6px; background: var(--fg); color: var(--bg); font: 400 12.5px/1.4 system-ui, sans-serif;
+  white-space: normal; text-align: left; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+
+/* start guide */
+.steps { margin: 0; padding-left: 0; list-style: none; counter-reset: step; }
+.step { counter-increment: step; padding: 8px 10px; border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px;
+        margin-bottom: 6px; cursor: pointer; }
+.step::before { content: counter(step) ". "; font-weight: 700; color: var(--muted); }
+.step.ok { border-left-color: var(--ok); } .step.warn { border-left-color: var(--warn); } .step.bad { border-left-color: var(--bad); }
+.step:hover { background: var(--code); }
+.step .how { margin: 4px 0 0 20px; color: var(--fg); }
+
+/* advanced settings folded under each form */
+details.advanced { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 4px; }
+details.advanced > summary { font-weight: 500; color: var(--muted); font-size: 13px; }
+
+/* tags gallery */
+.taggallery { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.taggallery figure { margin: 0; width: 130px; text-align: center; font-size: 12px; }
+.taggallery img { width: 120px; height: auto; background: #fff; border: 1px solid var(--border); border-radius: 4px; }
+
+/* phone quick controls */
+.row.quick { gap: 10px; padding: 6px 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }

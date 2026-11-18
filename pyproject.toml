@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tango-mw"
 version = "0.1.0"
-description = "Middleware GAMA <-> robots physiques : tracking AprilTag/homographie et contrôle via ROS 2"
+description = "GAMA <-> physical robots middleware: AprilTag/homography tracking and control over ROS 2"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,6 +15,8 @@ dependencies = [
     "PyYAML>=6.0",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "websockets>=12",      # phone camera (WebSocket)
+    "cryptography>=41",    # self-signed certificate for the HTTPS phone camera page
 ]
 
 [project.optional-dependencies]
