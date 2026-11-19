@@ -1,6 +1,8 @@
-# Tango: GAMA ↔ physical robots middleware
+# Tango middleware: simplifying the GAMA - physical robots synchronization
+
 
 This middleware connects a **GAMA** simulation (the logical world) with **real robots** that act it out (the physical world). All communication goes through **ROS 2**. It is written in Python and runs on Linux, Windows and macOS.
+A full setup and user guide is available on the [github pages site](https://projet-tango.github.io/tango-middleware/)
 
 It has two jobs:
 
