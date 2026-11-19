@@ -117,6 +117,10 @@ These checks only inform: robots are already stopped automatically when their ta
 
 With `world.homography_mode: locked`, the locked homography is still compared with the boundary tags on every frame. If the camera is bumped (tags off by more than `world.max_reprojection_error` for 5 frames, with at least `min_tags` visible), it is recomputed automatically and a warning is logged (`world.relock_on_move`, on by default). In `continuous` mode it simply follows the tags on every frame.
 
+### Several cameras
+
+`cameras:` lists additional cameras (same fields as `camera`, plus `name`, `enabled`); the interface adds them in *Camera → Cameras*. Each camera runs its own detection, homography and camera-position estimate (it must see at least 4 boundary tags), and `vision/fusion.py` merges the robots: weighted average (weight = tag size in pixels²) after bringing every observation to the same instant, or **triangulation** when two located cameras see the same tag, which gives the ground position without knowing the tag height and measures that height (used afterwards for robots seen by one camera only). Several phones connect at once, one per `mobile` camera (bindings in `config/phones.json`). Per-camera video: `/api/stream.mjpg?camera=<name>`; per-camera state: `GET /api/cameras/status`; simulated multi-camera setups share one simulated world (`SimWorld`).
+
 ### Phone as camera
 
 Any phone can be the camera: an **Android app** ([tango-camera-mobile](https://github.com/projet-tango/tango-camera-mobile)) or, for an **iPhone** (or a phone without the app), a **web page** served by the middleware. The phone streams JPEG frames over Wi-Fi; nothing else changes (detection, homography, `rotate`/`flip`, intrinsics).
@@ -281,7 +285,7 @@ class MyController(Controller):
 tango_mw/
   config.py            configuration model (pydantic) + YAML
   frames.py            geometry, physical ↔ GAMA mapping
-  vision/              camera, phone receiver (mobile.py), setup checks (quality.py), camera position (camera_pose.py), AprilTag detection, homography & tracking, synthetic camera (top or oblique)
+  vision/              camera, phone receiver (mobile.py), setup checks (quality.py), camera position (camera_pose.py), multi-camera fusion (fusion.py), AprilTag detection, homography & tracking, synthetic camera (top or oblique)
   control/             controller API, built-in controllers, registry/plugins, calibration, go-to/placement, loop
   bus/                 ROS 2 (rclpy) and loopback
   app.py               orchestration (vision / control / publication threads)

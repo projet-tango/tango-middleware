@@ -40,6 +40,7 @@
         <ol id="steps" class="steps"></ol>
       </div>
       <div class="card"><h3>Live view <span class="help" data-help="What the camera sees. Green outlines: boundary tags; orange: robots (with their heading arrow); red: unknown tags. The yellow grid is the GAMA world.">?</span></h3>
+        <div class="row"><select class="camsel" title="Camera shown"></select></div>
         <img id="stream0" class="preview" alt="camera stream">
         <div class="row">
           <button id="placeall" class="primary" title="Drive every robot to its home position, one after the other">Place robots at home</button>
@@ -54,7 +55,7 @@
 
   <section id="tab-dash" class="tab">
     <div class="grid2">
-      <div class="card video"><img id="stream" alt="camera stream"><div class="muted small" id="videoinfo"></div></div>
+      <div class="card video"><div class="row"><select class="camsel" title="Camera shown"></select></div><img id="stream" alt="camera stream"><div class="muted small" id="videoinfo"></div></div>
       <div class="card">
         <h3>World <span class="help" data-help="The homography maps image pixels to metres on the floor. It needs at least 4 boundary tags in view. The reprojection error tells how well the tags agree with their configured positions (a few mm is good).">?</span></h3>
         <div id="worldinfo" class="kv"></div>
@@ -107,15 +108,21 @@
   </section>
 
   <section id="tab-camera" class="tab">
+    <div class="card"><h3>Cameras <span class="help" data-help="Several cameras can film the field: fewer blind spots (a robot hidden from one camera is seen by another), a larger area, better accuracy. Each camera must see at least 4 boundary tags; it finds its own position from them. A robot seen by two cameras is triangulated: its position no longer depends on its tag height, which is measured automatically.">?</span></h3>
+      <div class="tablewrap"><table id="camtable"></table></div>
+      <div class="row"><label class="small">New camera source <select id="newcamsrc"><option value="mobile">phone</option><option value="0">USB camera 0</option><option value="1">USB camera 1</option><option value="synthetic">simulated</option></select></label>
+        <button id="addcam" class="ghost">+ Add a camera</button></div>
+      <div id="form-cameras"></div>
+    </div>
     <div class="grid2">
-      <div class="card"><h3>Camera <span class="help" data-help="Where the images come from: a USB camera index (0, 1…), a video file, an RTSP/HTTP URL, 'mobile' for a phone, or 'synthetic' for the built-in simulator. Advanced settings (exposure, FOURCC, lens intrinsics…) are folded below.">?</span></h3><div id="form-camera"></div>
+      <div class="card"><h3>Main camera <span class="help" data-help="Where the images come from: a USB camera index (0, 1…), a video file, an RTSP/HTTP URL, 'mobile' for a phone, or 'synthetic' for the built-in simulator. Advanced settings (exposure, FOURCC, lens intrinsics…) are folded below.">?</span></h3><div id="form-camera"></div>
         <div class="row"><button id="probe" class="ghost">Detect local cameras</button><span id="probeout" class="muted small"></span></div>
       </div>
       <div class="card" id="mobilecard"><h3>Phone as camera <span class="help" data-help="An Android phone (Tango Camera app) or an iPhone (web page) streams its camera over Wi-Fi. The app finds the middleware by itself; type the pairing code once (or scan the QR code). The quick settings below are applied to the phone immediately.">?</span></h3>
         <div id="phonecontrols"></div><div id="mobilebox"></div></div>
       <div class="card"><h3>Setup checks <span class="help" data-help="Lighting and image quality, measured on the tags. Fix the red lines first: they make tracking unreliable.">?</span></h3><div class="tablewrap"><table class="checks" data-checks></table></div></div>
       <div class="card"><h3>AprilTag detection <span class="help" data-help="The tag family must match the printed tags (tag36h11 by default). The other settings trade speed for robustness; the defaults suit most setups.">?</span></h3><div id="form-detector"></div>
-        <h3>Preview</h3><img id="stream2" class="preview" alt="preview">
+        <h3>Preview <select class="camsel" title="Camera shown"></select></h3><img id="stream2" class="preview" alt="preview">
       </div>
     </div>
   </section>

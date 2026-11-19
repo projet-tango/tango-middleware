@@ -70,6 +70,13 @@ Published 10 times per second:
 `x`, `y`, `theta` are physical (m, rad); `logical` is in GAMA units. `goal` is `null` when the robot never
 received a go-to.
 
+## Several cameras
+
+`/tango/world/state` and `/tango/robots/state` carry the **fused** positions (all cameras). The REST
+API has the details per camera: `GET /api/cameras/status` (state, homography, estimated position, robots
+seen) and, in `GET /api/status`, `fusion` (for each robot: cameras seeing it, `average` or `triangulated`,
+measured tag height). Video per camera: `/api/stream.mjpg?camera=<name>`, `/api/snapshot.jpg?camera=<name>`.
+
 ## Other topics
 
 | Topic | Type | Content |

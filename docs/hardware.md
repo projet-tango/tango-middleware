@@ -143,6 +143,47 @@ check of the setup:
 > centred, 0.8 m in front of the field) and `robot_tag_height`. The simulator then renders what a real
 > camera there would see, with the parallax of the robot tags.
 
+## Several cameras
+
+Two phones (or more, or a phone and a USB camera) can film the field together:
+
+- **No blind spots**: a robot hidden from one camera (by another robot, or out of its view) is still seen
+  by another. Particularly useful with cameras at head height.
+- **Bigger fields**: each camera covers part of it.
+- **No tag height to measure**: a robot seen by two cameras is **triangulated**, so its ground position no
+  longer depends on its tag height, which is measured on the way (and then used when only one camera
+  sees the robot).
+
+Each camera must see **at least 4 boundary tags** (all four corners, or corners plus extra landmarks):
+it finds its own position from them, and all cameras then share the same frame — nothing to calibrate
+between them. A good pair: one camera above the field and one at head height on a side, or two tripods
+on two adjacent sides.
+
+**Camera** tab → *Cameras* → choose the source (*phone*, USB, simulated) → **+ Add a camera**, then
+**Apply & save**. For phones: open Tango Camera on the second phone, it pairs with the same code; each
+phone is given a camera and gets it back after a reboot (*Phones per camera* in the phone card; *Forget
+phone* frees a camera, e.g. to swap two phones).
+
+![Cameras](images/multicam-cameras.png)
+
+The *Preview* buttons (or the camera selector above every live view) show what each camera sees, with
+the fused robot positions drawn on it:
+
+![The tripod camera](images/multicam-tripod-preview.png)
+
+The dashboard tells which cameras see each robot, and the measured tag heights (simulation: tags really
+12 cm high, nothing entered):
+
+![Seen by](images/multicam-robots.png)
+
+Measured in simulation (2 cameras, 1.5 m field, tags 12 cm high, height not entered): robots located
+within 1 mm by triangulation, tag heights measured within 2 mm. Positions and heights typed by hand
+still take priority where you enter them.
+
+> Notes: the cameras are not synchronised (each image is stamped on arrival); the fusion brings the
+> observations to the same instant with the robots' speed. Each phone uses 4–8 Mbit/s at 720p: 3–4
+> phones are fine on 5 GHz Wi-Fi. Every camera costs ~10–20 ms of processing per frame on the PC.
+
 ## Light
 
 - **Even**, diffuse light: ceiling lights, or daylight without direct sun on the field. Avoid spots that
