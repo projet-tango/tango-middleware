@@ -98,23 +98,36 @@ def create_web_app(app: App) -> FastAPI:
         return {"path": str(app.save())}
 
     # ------------------------------------------------------------------ video
+    def _camera(name: Optional[str]) -> Optional[str]:
+        if name and name not in app.units:
+            raise HTTPException(404, f"unknown camera: {name}")
+        return name
+
+    @api.get("/api/cameras/status")
+    def cameras_status():
+        """Every camera: state, homography, estimated position, robots it sees."""
+        return app.cameras_status()
+
     @api.get("/api/snapshot.jpg")
-    def snapshot():
-        jpg = app.annotated_jpeg()
+    def snapshot(camera: Optional[str] = None):
+        jpg = app.annotated_jpeg(camera=_camera(camera))
         if jpg is None:
             raise HTTPException(503, "no image")
         return Response(jpg, media_type="image/jpeg")
 
     @api.get("/api/stream.mjpg")
-    def stream():
+    def stream(camera: Optional[str] = None):
+        cam = _camera(camera)
+
         def gen():
             period = 1.0 / max(app.cfg.web.preview_fps, 0.5)
             last_seq = -1
             while True:
                 t0 = time.time()
-                if app.frame_seq != last_seq:
-                    last_seq = app.frame_seq
-                    jpg = app.annotated_jpeg()
+                u = app.unit(cam)
+                if u is not None and u.frame_seq != last_seq:
+                    last_seq = u.frame_seq
+                    jpg = app.annotated_jpeg(camera=cam)
                     if jpg:
                         yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n"
                 time.sleep(max(0.01, period - (time.time() - t0)))
@@ -139,8 +152,9 @@ def create_web_app(app: App) -> FastAPI:
     # ------------------------------------------------------------------ phone camera
     @api.get("/api/mobile")
     def mobile_status():
+        any_mobile = any(c.is_mobile for c in app.cfg.all_cameras())
         if app.mobile is None:
-            return {"running": False, "source_is_mobile": app.cfg.camera.is_mobile, "error": app.camera_error}
+            return {"running": False, "source_is_mobile": any_mobile, "error": app.camera_error}
         return {**app.mobile.describe(), "source_is_mobile": True}
 
     @api.post("/api/mobile/new_code")
@@ -148,9 +162,16 @@ def create_web_app(app: App) -> FastAPI:
         return {"pairing_code": app.new_pairing_code()}
 
     @api.post("/api/mobile/disconnect")
-    def mobile_disconnect():
+    def mobile_disconnect(camera: Optional[str] = None):
         if app.mobile:
-            app.mobile.kick()
+            app.mobile.kick(camera)
+        return {"ok": True}
+
+    @api.post("/api/mobile/forget")
+    def mobile_forget(camera: str):
+        """Unbind the phone of a camera: the next phone that connects takes it."""
+        if app.mobile:
+            app.mobile.forget(camera)
         return {"ok": True}
 
     @api.get("/api/mobile/qr.png")

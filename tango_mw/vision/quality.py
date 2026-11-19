@@ -105,7 +105,14 @@ class SetupChecks:
         self.result = {"overall": "unknown", "checks": [], "stamp": time.time()}
 
     def update(self, frame: np.ndarray, dets: List[TagDetection], snap, cfg: AppConfig, fps: float,
-               phone: Optional[Dict[str, Any]] = None) -> None:
+               phone: Optional[Dict[str, Any]] = None, camera=None, single_camera: bool = True,
+               measured_heights: Optional[Dict[str, float]] = None) -> None:
+        """camera: this camera's configuration (default: the main one). With several cameras a robot
+        legitimately leaves one camera's view, so the 'flickering robot' check is skipped, and tag
+        heights measured by triangulation count as set."""
+        self._camera = camera if camera is not None else cfg.camera
+        self._single = single_camera
+        self._measured = measured_heights or {}
         self.history.append({d.id for d in dets})
         g = frame if frame.ndim == 2 else frame[:, :, 1]  # green ~ luminance, no conversion needed
         self.levels.append(float(g[::16, ::16].mean()))
@@ -144,7 +151,8 @@ class SetupChecks:
         tm = {i: tag_metrics(gray, d, cfg.detector.family, modules) for i, d in by_id.items() if i in world_ids or i in robot_tag}
 
         # frame rate
-        want = cfg.camera.fps or 0
+        cam = getattr(self, "_camera", None) or cfg.camera
+        want = cam.fps or 0
         if want and fps:
             r = fps / want
             out.append(_check("fps", "Frame rate", "ok" if r >= 0.8 else "warn" if r >= 0.5 else "bad",
@@ -195,7 +203,7 @@ class SetupChecks:
             seen += r > 0.05
             if 0.05 < r < 0.9:
                 flicker.append(f"{name} {r:.0%}")
-        if robot_tag:
+        if robot_tag and getattr(self, "_single", True):
             out.append(_check("robot_tags", "Robot tags detection", "warn" if flicker else "ok" if seen else "unknown",
                               ", ".join(flicker) or (f"steady ({seen}/{len(robot_tag)} in view)" if seen else "no robot in view"),
                               "A robot tag is detected intermittently: motion blur, glare, tilt or tag too small."))
@@ -204,8 +212,8 @@ class SetupChecks:
         exp_ms, iso = phone.get("exposure_ms"), phone.get("iso")
         if exp_ms:
             limit = 1000.0 / max(phone.get("camera_fps") or want or 30, 1)
-            if cfg.camera.mobile.max_exposure_ms and phone.get("exposure_mode") == "manual":
-                limit = min(limit, cfg.camera.mobile.max_exposure_ms)
+            if cam.mobile.max_exposure_ms and phone.get("exposure_mode") == "manual":
+                limit = min(limit, cam.mobile.max_exposure_ms)
             # Phones lengthen the exposure first (up to the frame period) and only then raise the gain:
             # the room is dark when the exposure is at its limit AND the ISO climbs (more noise).
             maxed = exp_ms >= 0.85 * limit
@@ -219,7 +227,7 @@ class SetupChecks:
                               "frame rate / exposure cap (noisy image). Add light, lower camera.fps, or raise "
                               "camera.mobile.max_exposure_ms."))
 
-        out.append(parallax_check(snap, cfg))
+        out.append(parallax_check(snap, cfg, getattr(self, "_measured", {})))
 
         if not tm:
             out.append(_check("tags", "Tag image quality", "unknown", "no configured tag in view"))
@@ -274,7 +282,7 @@ class SetupChecks:
         return out
 
 
-def parallax_check(snap, cfg: AppConfig) -> Dict[str, Any]:
+def parallax_check(snap, cfg: AppConfig, measured: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     """Robot tags above the floor appear shifted, the more so the more oblique the camera."""
     px = cfg.world.parallax
     cam = getattr(snap, "camera", None) if px.auto_camera else CameraPose(px.camera_x, px.camera_y, px.camera_height, 0.0, 0.0, "manual")
@@ -282,7 +290,8 @@ def parallax_check(snap, cfg: AppConfig) -> Dict[str, Any]:
     if cam is None:
         return _check("parallax", label, "unknown", "camera position not known yet (needs the boundary tags)")
     robots = [r for r in cfg.robots if r.enabled]
-    missing = [r.name for r in robots if r.calibration.tag_height <= 0]
+    measured = measured or {}
+    missing = [r.name for r in robots if r.calibration.tag_height <= 0 and r.name not in measured]
     corners = [(t.x, t.y) for t in cfg.world.tags] or [(cam.x, cam.y)]
     shift10 = max(parallax_shift(cam, x, y, 0.10) for x, y in corners)  # worst case: farthest corner
     where = f"camera at ({cam.x:.2f}, {cam.y:.2f}) m, {cam.height:.2f} m high, tilted {math.degrees(cam.tilt):.0f}°"
@@ -298,7 +307,9 @@ def parallax_check(snap, cfg: AppConfig) -> Dict[str, Any]:
                       "Robots tab: measure the height of each robot's tag above the floor and type it in 'Tag height'. "
                       "With this camera position, positions are wrong by that much otherwise.")
     done = len(robots) - len(missing)
-    return _check("parallax", label, "ok", f"{done}/{len(robots)} robots corrected; {where}")
+    auto = [n for n in measured if any(r.name == n and r.calibration.tag_height <= 0 for r in robots)]
+    extra = f" ({len(auto)} measured by triangulation)" if auto else ""
+    return _check("parallax", label, "ok", f"{done}/{len(robots)} robots corrected{extra}; {where}")
 
 
 def _px_per_metre(snap) -> Optional[float]:

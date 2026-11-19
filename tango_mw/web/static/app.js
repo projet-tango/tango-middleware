@@ -195,6 +195,8 @@ function renderForms() {
   renderRobots();
   renderPhoneControls();
   updateTagLinks();
+  renderExtraCameras();
+  renderCameraSelectors();
 }
 async function applyDraft(save) {
   try {
@@ -404,14 +406,14 @@ function renderStatus() {
   kv("Image", w.image_size.join(" × "));
   const cam = w.camera;
   kv("Camera position", cam ? `(${fmt(cam.x, 2)}, ${fmt(cam.y, 2)}) m, ${fmt(cam.height, 2)} m high, tilted ${fmt(cam.tilt_deg, 0)}° ` +
-    `(${cam.source === "estimated" ? "estimated from the tags" : cam.source === "fov" ? "seen from above, typical field of view" : "lens intrinsics"})` : "–");
+    `(${cam.source === "estimated" ? "estimated from the tags" : cam.source === "fov" ? "seen from above, typical field of view" : cam.source === "manual" ? "entered by hand" : "lens intrinsics"})` : "–");
   kv("Logical frame", `${w.logical.width} × ${w.logical.height}, origin ${w.logical.origin}, heading in ${w.logical.heading_unit}`);
   const gi = $("#gamainfo"); gi.innerHTML = "";
   gi.append(h("div", {}, "Publishers on /requests"), h("div", {}, s.gama.publishers_on_requests ?? "n/a (no ROS)"),
     h("div", {}, "Last request"), h("div", {}, s.gama.last_request_age !== null ? fmt(s.gama.last_request_age, 1) + " s ago" : "never"));
 
   const t = $("#robottable"); t.innerHTML = "";
-  t.append(h("tr", {}, ["Robot", "Tag", "Seen", "x, y (m)", "θ (°)", "v (m/s)", "Logical (x, y, heading)", "State", "Request", "Command", "Network"].map(x => h("th", {}, x))));
+  t.append(h("tr", {}, ["Robot", "Tag", "Seen", "x, y (m)", "θ (°)", "v (m/s)", "Logical (x, y, heading)", "State", "Request", "Command", "Network"].concat((s.cameras || []).length > 1 ? ["Seen by"] : []).map(x => h("th", {}, x))));
   for (const [n, c] of Object.entries(s.control.robots)) {
     const r = w.robots[n] || {}; const p = s.presence[n] || {};
     const cmd = c.command || {};
@@ -425,7 +427,11 @@ function renderStatus() {
       h("td", { class: c.status === "active" ? "ok" : c.controller_error ? "bad" : "" }, c.status, c.controller_error ? h("pre", { class: "err" }, c.controller_error) : null),
       h("td", {}, c.request ? `${fmt(c.request.speed, 3)} m/s @ ${fmt(deg(c.request.heading), 0)}° (${c.request.source})` : "–"),
       h("td", {}, cmdTxt),
-      h("td", {}, p.known ? h("span", { class: p.online ? "ok" : "bad" }, p.online ? p.subscribers.join(", ") : "no subscriber") : h("span", { class: "muted" }, "n/a"))));
+      h("td", {}, p.known ? h("span", { class: p.online ? "ok" : "bad" }, p.online ? p.subscribers.join(", ") : "no subscriber") : h("span", { class: "muted" }, "n/a")),
+      (s.cameras || []).length > 1 ? h("td", {}, (() => { const f = (s.fusion || {})[n];
+        if (!f || !f.cameras.length) return "–";
+        return f.cameras.join(" + ") + (f.method === "triangulated" ? " (triangulated)" : "")
+          + (f.tag_height_measured != null ? `, tag ${fmt(f.tag_height_measured * 100, 1)} cm high` : ""); })()) : null));
   }
   updateRobotLive();
 }
@@ -709,6 +715,62 @@ $("#probe").addEventListener("click", async () => {
 });
 $("#relock").addEventListener("click", () => api("POST", "/api/world/relock"));
 
+// ---------------------------------------------------------------- several cameras
+let previewCamera = "";
+function cameraNames() {
+  if (!serverCfg) return [];
+  return [serverCfg.camera.name, ...serverCfg.cameras.filter(c => c.enabled).map(c => c.name)];
+}
+function renderCameraSelectors() {
+  const names = cameraNames();
+  if (previewCamera && !names.includes(previewCamera)) previewCamera = "";
+  for (const sel of $$(".camsel")) {
+    sel.innerHTML = "";
+    names.forEach((n, i) => sel.append(h("option", { value: i === 0 ? "" : n, selected: (i === 0 ? "" : n) === previewCamera }, n)));
+    sel.style.display = names.length > 1 ? "" : "none";
+    sel.onchange = () => { previewCamera = sel.value; renderCameraSelectors(); setTab(currentTab); };
+  }
+}
+let camKey = "";
+function renderCameraTable() {
+  const t = $("#camtable"); if (!t || !status || !status.cameras) return;
+  const key = JSON.stringify(status.cameras.map(c => [c.name, c.error, Math.round(c.fps), c.homography_valid, c.robots_visible,
+    c.camera && [c.camera.x.toFixed(2), c.camera.y.toFixed(2), c.camera.height.toFixed(2)]]));
+  if (key === camKey) return;
+  camKey = key;
+  t.innerHTML = "";
+  t.append(h("tr", {}, ["Camera", "Source", "State", "Boundary tags", "Position (estimated)", "Robots seen", ""].map(x => h("th", {}, x))));
+  for (const c of status.cameras) {
+    const extra = c.name !== serverCfg.camera.name;
+    t.append(h("tr", {},
+      h("td", {}, h("b", {}, c.name)), h("td", {}, c.source),
+      h("td", { class: c.error ? "bad" : "ok" }, c.error || `${fmt(c.fps, 0)} fps`),
+      h("td", { class: c.homography_valid ? "ok" : "bad" }, c.homography_valid ? `${c.world_tags_visible.join(", ")} (error ${fmt(c.reprojection_error * 1000, 1)} mm)` : "fewer than 4 visible"),
+      h("td", {}, c.camera ? `(${fmt(c.camera.x, 2)}, ${fmt(c.camera.y, 2)}) m, ${fmt(c.camera.height, 2)} m high, ${fmt(c.camera.tilt_deg, 0)}°` : "–"),
+      h("td", {}, c.robots_visible.join(", ") || "none"),
+      h("td", {}, h("button", { class: "ghost", onclick: () => { previewCamera = extra ? c.name : ""; renderCameraSelectors(); setTab("camera"); } }, "Preview"))));
+  }
+}
+function renderExtraCameras() {
+  const box = $("#form-cameras"); if (!box || !draft) return;
+  box.innerHTML = "";
+  const cs = resolve(schema.$defs.CameraConfig);
+  draft.cameras.forEach((cam, i) => {
+    box.append(h("details", { open: !cam.__seen ? true : null }, h("summary", {}, `${cam.name} — ${cam.source}${cam.enabled ? "" : " (disabled)"}`),
+      buildForm(cs, cam, { basic: ["name", "enabled", ...BASIC.camera] }),
+      h("div", { class: "row" }, h("button", { class: "danger ghost", onclick: () => {
+        if (confirm(`Remove camera ${cam.name}?`)) { draft.cameras.splice(i, 1); markDirty(); renderExtraCameras(); }
+      } }, "Remove this camera"))));
+  });
+}
+$("#addcam").addEventListener("click", () => {
+  const used = new Set([draft.camera.name, ...draft.cameras.map(c => c.name)]);
+  let n = 2; while (used.has("cam" + n)) n++;
+  const cam = clone(serverCfg.camera); cam.name = "cam" + n; cam.source = $("#newcamsrc").value; cam.enabled = true;
+  if (cam.mobile) cam.mobile.pairing_code = "";
+  draft.cameras.push(cam); markDirty(); renderExtraCameras();
+});
+
 // ---------------------------------------------------------------- start guide
 let stepsKey = "";
 function renderSteps() {
@@ -725,7 +787,8 @@ function renderSteps() {
   const gamaOn = s.gama.last_request_age !== null && s.gama.last_request_age < 2;
   const st = (ok, warn) => ok ? "ok" : warn ? "warn" : "bad";
   const steps = [
-    ["Camera streaming", "camera", st(hl.camera_ok), hl.camera_ok ? `${fmt(hl.fps, 0)} fps from ${cfg.camera.source}` : (hl.camera_error || "no image"),
+    ["Camera streaming", "camera", st(hl.camera_ok, (s.cameras || []).some(c => !c.error)),
+      hl.camera_ok ? ((s.cameras || []).length > 1 ? `${s.cameras.length} cameras, ` + s.cameras.map(c => `${c.name} ${fmt(c.fps, 0)} fps`).join(", ") : `${fmt(hl.fps, 0)} fps from ${cfg.camera.source}`) : (hl.camera_error || "no image"),
       "Pick the camera source. For a phone: set source to 'mobile', open the Tango Camera app and type the pairing code."],
     ["Boundary tags in view", "world", st(w.valid && !missing.length, w.valid), w.valid ? (missing.length ? `missing: ${missing.join(", ")}` : `all ${w.world_tags_expected.length} visible, error ${fmt(w.reprojection_error * 1000, 1)} mm`) : "homography not computed",
       "Print the boundary tags (Field & tags), lay them flat at the corners, enter their positions (or use Scan & assign)."],
@@ -735,7 +798,8 @@ function renderSteps() {
       "Stick a tag on each robot (FRONT arrow forward). Scan & assign → Identify finds which tag is on which robot."],
     ["Robots listening on ROS", "network", s.bus.kind !== "ros2" ? "warn" : st(known.length && online.length === known.length, online.length), s.bus.kind !== "ros2" ? "no ROS 2 (loopback bus)" : `${online.length}/${known.length} with a subscriber on their command topic`,
       "Start the robots' ROS nodes; same ROS_DOMAIN_ID as the middleware."],
-    (() => { const p = s.checks && s.checks.checks.find(c => c.id === "parallax");
+    (() => { const rank = { ok: 0, unknown: 1, warn: 2, bad: 3 };
+      const p = s.checks && s.checks.checks.filter(c => c.id === "parallax" || c.id.endsWith(".parallax")).sort((a, b) => rank[b.status] - rank[a.status])[0];
       const st2 = !p || p.status === "unknown" ? "warn" : p.status;
       return ["Robot tag heights (parallax)", "robots", st2, p ? p.value : "waiting for the camera position",
         "Robots tab → Tag height: measure the height of each robot's tag above the floor. Matters most with a camera at head height."]; })(),
@@ -844,9 +908,11 @@ function renderChecks() {
 let mobileKey = "";
 function renderMobile() {
   const box = $("#mobilebox"); if (!box || !status) return;
-  const m = status.mobile, src = (status.camera.source || "").trim().toLowerCase();
+  const m = status.mobile;
+  const src = (status.cameras || []).some(c => (c.source || "").trim().toLowerCase() === "mobile") ? "mobile" : (status.camera.source || "").trim().toLowerCase();
   const key = JSON.stringify([src, m && [m.running, m.error, m.https_error, m.pairing_code, m.require_code, m.web, m.app,
-    m.client && [m.client.name, m.client.address, Math.round(m.client.fps), m.client.width, JSON.stringify(m.client.stats)]]]);
+    m.client && [m.client.name, m.client.address, Math.round(m.client.fps), m.client.width, JSON.stringify(m.client.stats)],
+    (m.cameras || []).map(c => [c.camera, c.device, c.client && [c.client.name, Math.round(c.client.fps)]])]]);
   if (key === mobileKey) return;
   mobileKey = key; box.innerHTML = "";
   if (src !== "mobile") {
@@ -875,6 +941,14 @@ function renderMobile() {
     h("span", {}, "Web page (iPhone)"), h("span", {}, m.web.length ? h("a", { href: m.web[0], target: "_blank" }, m.web[0].replace(/#.*/, "")) : "–"),
   ));
   if (m.https_error) box.append(h("p", { class: "warn small" }, m.https_error));
+  if ((m.cameras || []).length > 1) {
+    box.append(h("h4", {}, "Phones per camera ", h("span", { class: "help", "data-help": "Each camera set to 'mobile' gets one phone. A phone gets back the camera it fed last time; a new phone takes a free camera. 'Forget' frees a camera for another phone (e.g. to swap two phones)." }, "?")),
+      h("table", {}, h("tr", {}, h("th", {}, "Camera"), h("th", {}, "Phone"), h("th", {})),
+        m.cameras.map(c => h("tr", {}, h("td", {}, h("b", {}, c.camera)),
+          h("td", { class: c.client ? "ok" : "warn" }, c.client ? `${c.client.name} — ${fmt(c.client.fps, 1)} fps` : (c.device ? "its phone is offline" : "waiting for a phone")),
+          h("td", {}, c.client ? h("button", { class: "ghost", onclick: () => api("POST", "/api/mobile/disconnect?camera=" + encodeURIComponent(c.camera)) }, "Disconnect") : null,
+            c.device ? h("button", { class: "ghost", onclick: () => api("POST", "/api/mobile/forget?camera=" + encodeURIComponent(c.camera)) }, "Forget phone") : null)))));
+  }
   if (m.web.length) {
     box.append(h("div", { class: "row" },
       h("img", { src: "/api/mobile/qr.png?data=" + encodeURIComponent(m.web[0]), alt: "QR code", style: "width:180px;height:180px;background:#fff;border-radius:6px" }),
@@ -922,9 +996,10 @@ function setTab(name) {
   currentTab = name;
   $$("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $$(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
-  $("#stream0").src = name === "start" ? "/api/stream.mjpg" : "";
-  $("#stream").src = name === "dash" ? "/api/stream.mjpg" : "";
-  $("#stream2").src = name === "camera" ? "/api/stream.mjpg" : "";
+  const url = "/api/stream.mjpg" + (previewCamera ? "?camera=" + encodeURIComponent(previewCamera) : "");
+  $("#stream0").src = name === "start" ? url : "";
+  $("#stream").src = name === "dash" ? url : "";
+  $("#stream2").src = name === "camera" ? url : "";
   $("#stream3").src = name === "deploy" ? "/api/stream.mjpg" : "";
   if (name === "deploy") { prefillWorldDims(); renderIdentTable(); }
   if (name === "network") loadNetwork().catch(() => {});
@@ -935,7 +1010,7 @@ function setTab(name) {
 $$("#tabs button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
 
 async function pollStatus() {
-  try { status = await api("GET", "/api/status"); renderStatus(); if (currentTab === "deploy") renderIdentTable(); if (currentTab === "camera") renderMobile(); if (currentTab === "start") renderSteps(); } catch {}
+  try { status = await api("GET", "/api/status"); renderStatus(); if (currentTab === "deploy") renderIdentTable(); if (currentTab === "camera") renderMobile(); if (currentTab === "start") renderSteps(); if (currentTab === "camera") renderCameraTable(); } catch {}
 }
 
 (async function init() {

@@ -25,7 +25,8 @@ from .vision.camera import FrameSource, OpenCVSource, postprocess
 from .vision.detector import TagDetector
 from .vision.mobile import MobileHub, MobileSource, new_pairing_code
 from .vision.quality import SetupChecks
-from .vision.synthetic import SyntheticSource
+from .vision.fusion import FusionInfo, View, fuse
+from .vision.synthetic import SimWorld, SyntheticSource
 from .vision.tracker import Tracker, WorldSnapshot
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,37 @@ class _Rate:
             self.next = time.time()
 
 
+class CameraUnit:
+    """Everything that belongs to one camera: source, detector, tracker (its own homography and
+    camera position), setup checks, last frame. Runs in its own thread."""
+
+    def __init__(self, cam_cfg, app_cfg: AppConfig):
+        self.name = cam_cfg.name
+        self.cfg = cam_cfg
+        self.tracker = Tracker(app_cfg.world, cam_cfg, app_cfg.robots)
+        self.detector = TagDetector(app_cfg.detector)
+        self.checks = SetupChecks()
+        self.source: Optional[FrameSource] = None
+        self.error: Optional[str] = None
+        self.next_open = 0.0
+        self.snapshot = WorldSnapshot()
+        self.frame: Optional[np.ndarray] = None
+        self.frame_seq = 0
+        self.fps = 0.0
+        self.last_frame_time = 0.0
+        self.running = False
+        self.thread: Optional[threading.Thread] = None
+
+    def close_source(self) -> None:
+        if self.source is not None:
+            try:
+                self.source.close()
+            except Exception:  # pragma: no cover
+                pass
+            self.source = None
+        self.next_open = 0.0
+
+
 class App:
     def __init__(self, cfg: AppConfig, config_path: Optional[Path] = None, base_dir: Optional[Path] = None):
         self.cfg = cfg
@@ -67,41 +99,88 @@ class App:
         self.started_at = time.time()
 
         self.registry = ControllerRegistry(cfg.plugins.dirs, base_dir=self.base_dir)
-        self.tracker = Tracker(cfg.world, cfg.camera, cfg.robots)
-        self.detector = TagDetector(cfg.detector)
         self.logical = LogicalFrame(cfg.logical, cfg.world)
         self.bus: Bus = LoopbackBus(cfg)
         self.bus_error: Optional[str] = None
         self.manager = ControlManager(cfg, self.registry, self._emit, self._job_done)
 
-        self._src_lock = threading.Lock()
-        self.source: Optional[FrameSource] = None
-        self.camera_error: Optional[str] = None
-        self.mobile: Optional[MobileHub] = None  # phone receiver, created when camera.source == 'mobile'
-        self.last_frame_time = 0.0
-        self.checks = SetupChecks()  # lighting / image quality diagnostics
-        self._next_open = 0.0
-        self.snapshot = WorldSnapshot()
-        self.frame: Optional[np.ndarray] = None
-        self.frame_seq = 0
-        self._fps = 0.0
+        self._src_lock = threading.RLock()
+        self.mobile: Optional[MobileHub] = None  # phone receiver, created when a camera's source is 'mobile'
+        self.sim: Optional[SimWorld] = None       # simulated robots, shared by every synthetic camera
+        self.units: Dict[str, CameraUnit] = {}
+        self.snapshot = WorldSnapshot()           # fused view of every camera: what control and GAMA use
+        self.fusion: Dict[str, FusionInfo] = {}
+        self.measured_heights: Dict[str, Deque[float]] = {}
+        self._fuse_lock = threading.Lock()
+        self._sync_units(cfg)
         self.last_request_time = 0.0
         self._running = False
         self._threads = []
         self._dirty = False  # config changed but not saved
 
+    # ================================================================== cameras
+    @property
+    def main(self) -> CameraUnit:
+        return next(iter(self.units.values()))
+
+    # the main camera, for code that deals with one camera (scan, stream, single-camera setups)
+    tracker = property(lambda self: self.main.tracker)
+    detector = property(lambda self: self.main.detector)
+    source = property(lambda self: self.main.source)
+    frame = property(lambda self: self.main.frame)
+    frame_seq = property(lambda self: self.main.frame_seq)
+    checks = property(lambda self: self.main.checks)
+    camera_error = property(lambda self: self.main.error)
+    last_frame_time = property(lambda self: self.main.last_frame_time)
+
+    def unit(self, name: Optional[str]) -> CameraUnit:
+        return self.units.get(name) if name else self.main
+
+    def _sync_units(self, cfg: AppConfig) -> None:
+        """Create / update / remove camera units to match the configuration."""
+        wanted = cfg.all_cameras()
+        names = [c.name for c in wanted]
+        for name in [n for n in self.units if n not in names]:
+            u = self.units.pop(name)
+            u.running = False
+            u.close_source()
+        units: Dict[str, CameraUnit] = {}
+        for cam in wanted:
+            u = self.units.get(cam.name)
+            if u is None:
+                u = CameraUnit(cam, cfg)
+                if getattr(self, "_running", False):
+                    self._start_unit(u)
+            elif u.cfg != cam:
+                u.cfg = cam
+                u.close_source()
+                u.tracker.set_world(cfg.world, cam)
+            units[cam.name] = u
+        self.units = units  # keeps the configuration order: main camera first
+
+    def _start_unit(self, u: CameraUnit) -> None:
+        u.running = True
+        u.thread = threading.Thread(target=self._unit_loop, args=(u,), name=f"vision-{u.name}", daemon=True)
+        u.thread.start()
+
     # ================================================================== lifecycle
+    def _ensure_pairing_code(self, cfg: AppConfig, persist: bool) -> None:
+        if any(c.is_mobile for c in cfg.all_cameras()) and not cfg.camera.mobile.pairing_code:
+            cfg.camera.mobile.pairing_code = self.cfg.camera.mobile.pairing_code or new_pairing_code()
+            if persist:
+                self._persist_pairing_code()
+
     def start(self) -> None:
-        if self.cfg.camera.is_mobile and not self.cfg.camera.mobile.pairing_code:
-            self.cfg.camera.mobile.pairing_code = new_pairing_code()
-            self._persist_pairing_code()
+        self._ensure_pairing_code(self.cfg, persist=True)
         self._start_bus()
         self._running = True
-        for name, fn in (("vision", self._vision_loop), ("control", self._control_loop), ("publish", self._publish_loop)):
+        for u in self.units.values():
+            self._start_unit(u)
+        for name, fn in (("control", self._control_loop), ("publish", self._publish_loop)):
             t = threading.Thread(target=fn, name=name, daemon=True)
             t.start()
             self._threads.append(t)
-        log.info("Middleware started (bus: %s)", self.bus.kind)
+        log.info("Middleware started (bus: %s, camera(s): %s)", self.bus.kind, ", ".join(self.units))
 
     def stop(self) -> None:
         # send a last stop to every robot
@@ -112,12 +191,13 @@ class App:
         except Exception:
             pass
         self._running = False
-        for t in self._threads:
+        for u in self.units.values():
+            u.running = False
+        for t in self._threads + [u.thread for u in self.units.values() if u.thread]:
             t.join(timeout=2.0)
         with self._src_lock:
-            if self.source:
-                self.source.close()
-                self.source = None
+            for u in self.units.values():
+                u.close_source()
             if self.mobile:
                 self.mobile.stop()
                 self.mobile = None
@@ -138,51 +218,54 @@ class App:
             self.bus.on_estop = self.manager.set_estop
 
     # ================================================================== vision
-    def _open_source(self) -> None:
-        cam = self.cfg.camera
+    def _open_source(self, u: CameraUnit) -> None:
+        cam = u.cfg
         try:
             if cam.source.strip().lower() == "synthetic":
-                self.source = SyntheticSource(self.cfg)
+                if self.sim is None:
+                    self.sim = SimWorld(self.cfg)
+                u.source = SyntheticSource(self.cfg, cam, self.sim)
             elif cam.is_mobile:
                 if self.mobile is None:
                     hub = MobileHub(self.cfg, self._data_dir())
                     hub.start()
                     self.mobile = hub
-                self.source = MobileSource(self.mobile)
+                u.source = MobileSource(self.mobile, cam.name)
             else:
-                self.source = OpenCVSource(cam)
-            self.camera_error = None
+                u.source = OpenCVSource(cam)
+            u.error = None
         except Exception as exc:
-            self.source = None
-            if self.camera_error != str(exc):
-                log.error("Camera: %s", exc)
-            self.camera_error = str(exc)
-            self._next_open = time.time() + 2.0
+            u.source = None
+            if u.error != str(exc):
+                log.error("Camera %s: %s", u.name, exc)
+            u.error = str(exc)
+            u.next_open = time.time() + 2.0
 
-    def _vision_loop(self) -> None:
+    def _unit_loop(self, u: CameraUnit) -> None:
         last = time.time()
         failures = 0
-        while self._running:
+        while self._running and u.running:
             with self._src_lock:
-                if self.source is None and time.time() >= self._next_open:
-                    self._open_source()
-                src, det, cam = self.source, self.detector, self.cfg.camera
+                if u.source is None and time.time() >= u.next_open:
+                    self._open_source(u)
+                src, det, cam = u.source, u.detector, u.cfg
             if src is None:
-                if self.checks.history:
-                    self.checks.reset()
+                if u.checks.history:
+                    u.checks.reset()
                 time.sleep(0.1)
                 continue
             ok, frame, stamp = src.read()
+            if not u.running:
+                break
             if not ok or frame is None:
                 failures += 1
-                if failures == 10 and self.checks.history:  # ~5 s without frames for a phone
-                    self.checks.reset()
+                if failures == 10 and u.checks.history:  # ~5 s without frames for a phone
+                    u.checks.reset()
                 if failures > 30 and src.reopen_on_failure:
-                    log.warning("Camera: no more frames, reopening")
+                    log.warning("Camera %s: no more frames, reopening", u.name)
                     with self._src_lock:
-                        if self.source is src:
-                            src.close()
-                            self.source = None
+                        if u.source is src:
+                            u.close_source()
                     failures = 0
                 time.sleep(0.02)
                 continue
@@ -191,19 +274,43 @@ class App:
             dt = stamp - last
             last = stamp
             if dt > 0:
-                self._fps = 0.9 * self._fps + 0.1 / dt if self._fps else 1.0 / dt
+                u.fps = 0.9 * u.fps + 0.1 / dt if u.fps else 1.0 / dt
             try:
                 dets = det.detect(frame)
-                snap = self.tracker.process(dets, stamp, (frame.shape[1], frame.shape[0]), self._fps)
+                snap = u.tracker.process(dets, stamp, (frame.shape[1], frame.shape[0]), u.fps)
             except Exception as exc:  # pragma: no cover
-                log.exception("Detection error: %s", exc)
+                log.exception("Detection error (%s): %s", u.name, exc)
                 continue
+            u.snapshot = snap
+            u.frame = frame
+            u.frame_seq += 1
+            u.last_frame_time = time.time()
+            self._fuse()
+            stats = src.phone_stats() if hasattr(src, "phone_stats") else None
+            u.checks.update(frame, dets, snap, self.cfg, u.fps, stats, camera=cam,
+                            single_camera=len(self.units) == 1, measured_heights=self.tag_heights_measured())
+
+    def _fuse(self) -> None:
+        """Rebuild the shared snapshot from every camera."""
+        units = list(self.units.values())
+        if len(units) == 1:
+            self.snapshot = units[0].snapshot
+            return
+        with self._fuse_lock:
+            snap, info = fuse([View(u.name, u.snapshot) for u in units], units[0].name, time.time())
+            for name, fi in info.items():
+                if fi.height is not None:
+                    dq = self.measured_heights.setdefault(name, collections.deque(maxlen=300))
+                    dq.append(fi.height)
+            heights = self.tag_heights_measured()
+            for u in units:
+                u.tracker.height_override = heights
+            self.fusion = info
             self.snapshot = snap
-            self.frame = frame
-            self.frame_seq += 1
-            self.last_frame_time = time.time()
-            client = self.mobile.client if self.mobile else None
-            self.checks.update(frame, dets, snap, self.cfg, self._fps, client.stats if client else None)
+
+    def tag_heights_measured(self) -> Dict[str, float]:
+        """Tag heights measured by triangulation (median), for robots seen by several cameras."""
+        return {n: float(np.median(d)) for n, d in self.measured_heights.items() if len(d) >= 10}
 
     # ================================================================== control
     def _emit(self, robot: RobotConfig, raw: Dict[str, Any]) -> None:
@@ -211,9 +318,8 @@ class App:
             self.bus.publish_command(robot, raw)
         except Exception as exc:
             self.bus.errors[f"cmd:{robot.name}"] = repr(exc)
-        src = self.source
-        if isinstance(src, SyntheticSource):
-            src.on_command(robot.name, raw)
+        if self.sim is not None:
+            self.sim.on_command(robot.name, raw)
 
     def _control_loop(self) -> None:
         rate = _Rate(self.cfg.ros.control_rate)
@@ -409,18 +515,56 @@ class App:
             "robots": {n: self.robot_json(n, snap, now) for n in snap.robots},
         }
 
-    def camera_problem(self) -> Optional[str]:
-        if self.camera_error:
-            return self.camera_error
-        src = self.source
+    def unit_problem(self, u: CameraUnit) -> Optional[str]:
+        if u.error:
+            return u.error
+        src = u.source
         if src is None:
             return "camera closed"
         reason = src.status_error()
         if reason:
             return reason
-        if time.time() - self.last_frame_time > 3.0:
+        if time.time() - u.last_frame_time > 3.0:
             return "no frame for more than 3 s"
         return None
+
+    def camera_problem(self) -> Optional[str]:
+        problems = [(u.name, self.unit_problem(u)) for u in self.units.values()]
+        problems = [(n, p) for n, p in problems if p]
+        if not problems:
+            return None
+        if len(self.units) == 1:
+            return problems[0][1]
+        return "; ".join(f"{n}: {p}" for n, p in problems)
+
+    def checks_result(self) -> Dict[str, Any]:
+        """Setup checks of every camera (prefixed with its name when there are several)."""
+        units = list(self.units.values())
+        if len(units) == 1:
+            return units[0].checks.result
+        rank = {"ok": 0, "unknown": 0, "warn": 1, "bad": 2}
+        checks, overall = [], "unknown"
+        for u in units:
+            r = u.checks.result
+            for c in r["checks"]:
+                checks.append({**c, "id": f"{u.name}.{c['id']}", "label": f"{u.name}: {c['label']}", "camera": u.name})
+            if r["overall"] != "unknown" and (overall == "unknown" or rank[r["overall"]] > rank[overall]):
+                overall = r["overall"]
+        return {"overall": overall, "checks": checks, "stamp": max((u.checks.result["stamp"] for u in units), default=0.0)}
+
+    def cameras_status(self) -> List[Dict[str, Any]]:
+        out = []
+        for u in self.units.values():
+            snap = u.snapshot
+            out.append({
+                "name": u.name, "source": u.cfg.source, "error": self.unit_problem(u), "fps": u.fps,
+                "homography_valid": snap.H is not None, "reprojection_error": snap.reprojection_error,
+                "world_tags_visible": snap.world_tags_visible,
+                "camera": snap.camera.as_dict() if snap.camera else None,
+                "robots_visible": [n for n, o in snap.robots.items() if o.visible],
+                "image_size": list(snap.image_size), "info": u.source.info() if u.source else {},
+            })
+        return out
 
     def health(self) -> Dict[str, Any]:
         snap = self.snapshot
@@ -434,7 +578,7 @@ class App:
             "camera_error": problem,
             "fps": snap.fps,
             "homography_valid": snap.H is not None,
-            "setup_checks": self.checks.result["overall"],
+            "setup_checks": self.checks_result()["overall"],
             "estop": ctrl["estop"],
             "robots": {n: {"status": r["status"], "visible": snap.robots[n].visible if n in snap.robots else False}
                        for n, r in ctrl["robots"].items()},
@@ -467,23 +611,30 @@ class App:
 
     def apply_config(self, new: AppConfig) -> None:
         old = self.cfg
-        if new.camera.is_mobile and not new.camera.mobile.pairing_code:
-            new.camera.mobile.pairing_code = old.camera.mobile.pairing_code or new_pairing_code()
+        self._ensure_pairing_code(new, persist=False)
         self.cfg = new
-        cam_changed = old.camera != new.camera or (
-            new.camera.source == "synthetic" and (old.world != new.world or old.detector.family != new.detector.family))
         with self._src_lock:
-            if old.detector != new.detector:
-                self.detector = TagDetector(new.detector)
-            if cam_changed and self.source is not None:
-                self.source.close()
-                self.source = None
-                self._next_open = 0.0
-            elif isinstance(self.source, SyntheticSource):
-                self.source.app_cfg = new
-                self.source.sync_robots(new.robots)
+            if old.world != new.world or old.detector.family != new.detector.family:
+                # the simulated field changed: rebuild the simulated world and its camera views
+                if self.sim is not None:
+                    self.sim = None
+                    for u in self.units.values():
+                        if isinstance(u.source, SyntheticSource):
+                            u.close_source()
+            self._sync_units(new)
+            for u in self.units.values():
+                if old.detector != new.detector:
+                    u.detector = TagDetector(new.detector)
+                if old.world != new.world:
+                    u.tracker.set_world(new.world, u.cfg)
+                u.tracker.set_robots(new.robots)
+                if isinstance(u.source, SyntheticSource):
+                    u.source.app_cfg = new
+            if self.sim is not None:
+                self.sim.app_cfg = new
+                self.sim.sync_robots(new.robots)
             if self.mobile is not None:
-                if not new.camera.is_mobile:
+                if not any(c.is_mobile for c in new.all_cameras()):
                     self.mobile.stop()
                     self.mobile = None
                 else:
@@ -492,11 +643,10 @@ class App:
                     except Exception as exc:
                         log.error("Phone receiver: %s", exc)
                         self.mobile = None
-                        self.source = None
-                        self._next_open = time.time() + 2.0
-        if old.world != new.world or old.camera.camera_matrix != new.camera.camera_matrix or old.camera.dist_coeffs != new.camera.dist_coeffs:
-            self.tracker.set_world(new.world, new.camera)
-        self.tracker.set_robots(new.robots)
+                        for u in self.units.values():
+                            if u.cfg.is_mobile:
+                                u.close_source()
+                                u.next_open = time.time() + 2.0
         self.logical = LogicalFrame(new.logical, new.world)
         if old.plugins.dirs != new.plugins.dirs:
             self.registry.set_dirs(new.plugins.dirs)
@@ -542,7 +692,8 @@ class App:
         return cfg.camera.mobile.pairing_code
 
     def relock_homography(self) -> None:
-        self.tracker.relock()
+        for u in self.units.values():
+            u.tracker.relock()
 
     # ================================================================== UI helpers
     def status(self) -> Dict[str, Any]:
@@ -556,6 +707,7 @@ class App:
         with self._src_lock:
             if self.source is not None:
                 info = self.source.info()
+        heights = self.tag_heights_measured()
         return {
             "health": self.health(),
             "world": self.world_json(),
@@ -567,17 +719,24 @@ class App:
             },
             "bus": {"kind": self.bus.kind, "errors": dict(self.bus.errors), "error": self.bus_error},
             "camera": {"error": self.camera_problem(), "info": info, "source": self.cfg.camera.source},
+            "cameras": self.cameras_status(),
+            "fusion": {n: {"cameras": f.cameras, "method": f.method, "tag_height_measured": heights.get(n)}
+                       for n, f in self.fusion.items()},
             "mobile": self.mobile.describe() if self.mobile else None,
-            "checks": self.checks.result,
+            "checks": self.checks_result(),
             "registry_errors": dict(self.registry.errors),
             "config_dirty": self._dirty,
             "config_path": str(self.config_path) if self.config_path else None,
         }
 
-    def annotated_jpeg(self, quality: Optional[int] = None) -> Optional[bytes]:
-        frame, snap = self.frame, self.snapshot
-        if frame is None:
+    def annotated_jpeg(self, quality: Optional[int] = None, camera: Optional[str] = None) -> Optional[bytes]:
+        u = self.unit(camera)
+        if u is None or u.frame is None:
             return None
+        frame, own = u.frame, u.snapshot
+        # this camera's tags and homography; the robots as fused from every camera
+        snap = WorldSnapshot(stamp=own.stamp, H=own.H, reprojection_error=own.reprojection_error, bounds=own.bounds,
+                             detections=own.detections, fps=u.fps, robots=self.snapshot.robots)
         img = frame.copy()
         world_ids = {t.id for t in self.cfg.world.tags}
         robot_ids = {r.tag_id: r.name for r in self.cfg.robots}
@@ -612,7 +771,7 @@ class App:
                     h = rt.request.heading
                     q = apply_h(Hi, np.array([[o.x, o.y], [o.x + L_arrow * math.cos(h), o.y + L_arrow * math.sin(h)]])).astype(int)
                     cv2.arrowedLine(img, tuple(q[0]), tuple(q[1]), (0, 255, 255), thick, cv2.LINE_AA, tipLength=0.3)
-        txt = f"{snap.fps:4.1f} fps  H:{'ok' if snap.H is not None else '--'}"
+        txt = (f"{u.name}  " if len(self.units) > 1 else "") + f"{snap.fps:4.1f} fps  H:{'ok' if snap.H is not None else '--'}"
         if snap.reprojection_error is not None:
             txt += f" err {snap.reprojection_error * 1000:.1f}mm"
         if self.manager.estop:

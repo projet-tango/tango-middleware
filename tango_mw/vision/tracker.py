@@ -41,6 +41,9 @@ class RobotObservation:
     last_seen: float = 0.0
     image_center: Tuple[float, float] = (0.0, 0.0)
     ever_seen: bool = False
+    floor_x: float = 0.0  # tag centre projected on the floor as if the tag were on it (no parallax correction)
+    floor_y: float = 0.0
+    px: float = 0.0       # tag side in pixels at the last detection (how precisely it is seen)
 
     @property
     def speed(self) -> float:
@@ -92,6 +95,8 @@ class Tracker:
         self._moved_at = 0.0
         self._robots: Dict[str, RobotObservation] = {}
         self._robot_cfg: Dict[int, RobotConfig] = {}
+        # tag heights measured by triangulation (several cameras), used when none is configured
+        self.height_override: Dict[str, float] = {}
         self.set_robots(robots)
         self.bounds = convex_hull((t.x, t.y) for t in world.tags)
 
@@ -177,6 +182,14 @@ class Tracker:
                              a * old.focal_px + (1 - a) * cam.focal_px, cam.source)
         self._cam = cam
 
+    def _camera_used(self) -> Optional[CameraPose]:
+        """The camera position in use: estimated, or the one entered by hand (auto_camera off)."""
+        px = self.world.parallax
+        if px.auto_camera:
+            return self._cam
+        tilt = self._cam.tilt if self._cam is not None else 0.0
+        return CameraPose(px.camera_x, px.camera_y, px.camera_height, tilt, 0.0, "manual")
+
     def camera_position(self) -> Optional[tuple]:
         """(x, y, height) used for the parallax correction, or None."""
         px = self.world.parallax
@@ -228,7 +241,8 @@ class Tracker:
                 cal = cfg.calibration if cfg else None
                 img = self._undistort(np.array([d.center, d.top_mid]))
                 wc, wt = apply_h(H, img)
-                th = cal.tag_height if cal else 0.0
+                floor = (float(wc[0]), float(wc[1]))
+                th = cal.tag_height if cal and cal.tag_height > 0 else self.height_override.get(name, 0.0)
                 wc, wt = self._parallax(wc, th), self._parallax(wt, th)
                 tag_theta = math.atan2(wt[1] - wc[1], wt[0] - wc[0])
                 theta = wrap_angle(tag_theta + (cal.heading_offset if cal else 0.0))
@@ -237,6 +251,8 @@ class Tracker:
                 y = wc[1] + ox * math.sin(tag_theta) + oy * math.cos(tag_theta)
                 self._update_obs(obs, x, y, theta, float(wc[0]), float(wc[1]), tag_theta, stamp)
                 obs.image_center = (float(d.center[0]), float(d.center[1]))
+                obs.floor_x, obs.floor_y = floor
+                obs.px = float(np.mean(np.linalg.norm(np.roll(d.corners, -1, 0) - d.corners, axis=1)))
 
             known = world_ids | {o.tag_id for o in self._robots.values()}
             return WorldSnapshot(
@@ -246,7 +262,7 @@ class Tracker:
                 homography_stamp=self._H_stamp,
                 homography_locked=self._locked,
                 camera_moved_at=self._moved_at,
-                camera=self._cam,
+                camera=self._camera_used(),
                 world_tags_visible=seen,
                 bounds=list(self.bounds),
                 robots={n: o.copy() for n, o in self._robots.items()},
